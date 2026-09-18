@@ -92,10 +92,23 @@ class RayServeBackend(InferenceBackend):
 
         try:
             serve.run(app, name=server.name, blocking=False, logging_config=logging_config)
-            server._wait_for_healthy()
+            server._wait_for_healthy(status_check=self._raise_if_app_failed)
         except Exception:
             self._cleanup_failed_deploy()
             raise
+
+    def _raise_if_app_failed(self) -> None:
+        """Raise with Ray Serve's own diagnosis once the application state is terminal."""
+        from ray import serve
+        from ray.serve.schema import ApplicationStatus
+
+        app_status = serve.status().applications.get(self._server.name)
+        if app_status is not None and app_status.status in (
+            ApplicationStatus.DEPLOY_FAILED,
+            ApplicationStatus.UNHEALTHY,
+        ):
+            msg = f"Ray Serve application {self._server.name!r} is {app_status.status.value}: {app_status.message}"
+            raise RuntimeError(msg)
 
     @staticmethod
     def _quiet_runtime_env() -> dict[str, Any]:
