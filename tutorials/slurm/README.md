@@ -443,7 +443,7 @@ SlurmRayClient(
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `RAY_PORT_BROADCAST_DIR` | `/tmp` | Directory for the port-broadcast file. **Set to a shared filesystem path when `/tmp` is not shared across nodes.** |
+| `RAY_PORT_BROADCAST_DIR` | `/tmp/ray_port_broadcast_<uid>` | Directory for the port-broadcast file. **Set to a shared filesystem path when `/tmp` is not shared across nodes.** |
 | `RAY_TMPDIR` | `/tmp/ray` | Ray temp directory. Recommend setting to `/tmp/ray_${SLURM_JOB_ID}` to avoid cross-job collisions. |
 | `SLURM_JOB_ID` | set by SLURM | Used to name the port-broadcast file. Set manually if testing outside SLURM. |
 

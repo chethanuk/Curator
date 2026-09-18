@@ -12,9 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
+
 DEFAULT_RAY_PORT = 6379
 DEFAULT_RAY_DASHBOARD_PORT = 8265
-DEFAULT_RAY_TEMP_DIR = "/tmp/ray"  # noqa: S108
+# Scoped by UID so two users on one host get separate directories, rather than the second being
+# denied access to one the first already owns.
+DEFAULT_RAY_TEMP_DIR = f"/tmp/ray_{os.getuid()}"  # noqa: S108
 DEFAULT_RAY_METRICS_PORT = 8080
 DEFAULT_RAY_DASHBOARD_HOST = "127.0.0.1"
 DEFAULT_RAY_CLIENT_SERVER_PORT = 10001
@@ -26,6 +30,9 @@ DEFAULT_RAY_DASHBOARD_METRIC_PORT = 44227
 DEFAULT_RAY_SERVE_HAPROXY_METRICS_PORT = 9101
 # Default for Ray Serve's HAProxy stats endpoint (RAY_SERVE_HAPROXY_STATS_PORT).
 DEFAULT_RAY_SERVE_HAPROXY_STATS_PORT = 8404
+
+# Scoped by UID for the same reason as DEFAULT_RAY_TEMP_DIR; the SLURM job ID is in the file name.
+DEFAULT_RAY_PORT_BROADCAST_DIR = f"/tmp/ray_port_broadcast_{os.getuid()}"  # noqa: S108
 
 # We cannot use a free port between 10000 and 19999 as it is used by Ray.
 DEFAULT_RAY_MIN_WORKER_PORT = 10002
