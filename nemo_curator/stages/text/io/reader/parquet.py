@@ -16,6 +16,13 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 import pandas as pd
+import pyarrow as pa
+import pyarrow.dataset as ds
+import pyarrow.parquet as pq
+from fsspec.core import split_protocol, strip_protocol, url_to_fs
+from fsspec.implementations.local import LocalFileSystem
+from pyarrow.fs import FSSpecHandler, PyFileSystem
+from pyarrow.fs import LocalFileSystem as ArrowLocalFileSystem
 
 from nemo_curator.stages.base import CompositeStage
 from nemo_curator.stages.file_partitioning import FilePartitioningStage
@@ -23,6 +30,30 @@ from nemo_curator.tasks import DocumentBatch, EmptyTask
 from nemo_curator.utils.file_utils import FILETYPE_TO_DEFAULT_EXTENSIONS
 
 from .base import BaseFileReader
+
+# The read_kwargs a single pyarrow scan reproduces exactly; anything else keeps the per-file pandas reads.
+_SINGLE_SCAN_KWARGS = frozenset({"engine", "dtype_backend", "columns", "storage_options"})
+
+
+def _read_single_scan(
+    paths: list[str], columns: list[str] | None, storage_options: dict[str, Any] | None
+) -> pd.DataFrame | None:
+    """Read a file group in one pyarrow dataset scan. Returns None when the files' schemas do not unify."""
+    fs, _ = url_to_fs(paths[0], **(storage_options or {}))
+    if type(fs) is LocalFileSystem:  # exact type: a subclass may override how files are opened
+        pa_fs, paths = ArrowLocalFileSystem(), [strip_protocol(path) for path in paths]
+    else:
+        pa_fs = PyFileSystem(FSSpecHandler(fs))
+    factory = ds.FileSystemDatasetFactory(pa_fs, paths, ds.ParquetFileFormat(), ds.FileSystemFactoryOptions())
+    try:
+        # Inspect every footer: by default pyarrow takes the first file's schema and drops
+        # columns that only later files have, where pd.concat keeps them.
+        schema = factory.inspect(fragments=None)
+    except (pa.ArrowTypeError, pa.ArrowInvalid):
+        return None  # conflicting column types: let pd.concat promote them, as before
+    table = pq.read_table(paths, filesystem=pa_fs, schema=schema, columns=columns, use_pandas_metadata=True)
+    # Same conversion pd.read_parquet does for dtype_backend="pyarrow"; the reset stands in for ignore_index=True.
+    return table.to_pandas(types_mapper=pd.ArrowDtype).reset_index(drop=True)
 
 
 @dataclass
@@ -45,7 +76,11 @@ class ParquetReaderStage(BaseFileReader):
         read_kwargs: dict[str, Any] | None = None,
         fields: list[str] | None = None,
     ) -> pd.DataFrame:
-        """Read Parquet files using Pandas. Raises an exception if reading fails."""
+        """Read Parquet files into one DataFrame. Raises an exception if reading fails.
+
+        With the default pyarrow engine and dtype backend, a group on one filesystem is read in a single pyarrow
+        scan; any other configuration reads file by file with Pandas and concatenates.
+        """
 
         # Normalize read_kwargs to a dict to avoid TypeError when None
         # Work on a copy to avoid mutating caller's dict
@@ -59,6 +94,16 @@ class ParquetReaderStage(BaseFileReader):
         if "dtype_backend" not in read_kwargs:
             update_kwargs["dtype_backend"] = "pyarrow"
         read_kwargs.update(update_kwargs)
+        if (
+            paths
+            and read_kwargs["engine"] == "pyarrow"
+            and read_kwargs["dtype_backend"] == "pyarrow"
+            and read_kwargs.keys() <= _SINGLE_SCAN_KWARGS
+            and len({split_protocol(path)[0] for path in paths}) == 1
+        ):
+            df = _read_single_scan(paths, read_kwargs.get("columns"), read_kwargs.get("storage_options"))
+            if df is not None:
+                return df
         return pd.concat(
             (pd.read_parquet(path, **read_kwargs) for path in paths),
             ignore_index=True,
