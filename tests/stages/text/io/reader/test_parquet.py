@@ -12,12 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import threading
+import time
 from pathlib import Path
-from unittest.mock import patch
 
+import fsspec
 import pandas as pd
 import pyarrow as pa
 import pytest
+from fsspec.implementations.memory import MemoryFileSystem
 
 from nemo_curator.stages.text.io.reader.parquet import ParquetReader, ParquetReaderStage
 from nemo_curator.tasks import EmptyTask, FileGroupTask
@@ -72,35 +75,66 @@ def _make_file_group_task(files: list[str]) -> FileGroupTask:
     )
 
 
-def test_parquet_reader_stage_pandas_reads_and_concatenates(sample_parquet_files: list[str]):
-    # Use the first two files from the fixture
+class _SlowMemoryFileSystem(MemoryFileSystem):
+    """In-memory filesystem with a fixed delay per read, recording how many files have a read in flight."""
+
+    protocol = ("slowmem",)
+    _lock = threading.Lock()
+    _in_flight: dict[str, int]  # per-class counters, reset by the test
+    peak_files_in_flight = 0
+
+    def _open(self, path: str, mode: str = "rb", **kwargs: object) -> object:
+        f = super()._open(path, mode=mode, **kwargs)
+        if "r" not in mode:
+            return f
+        cls, read = type(self), f.read
+
+        def slow_read(*args: object, **kw: object) -> bytes:
+            with cls._lock:
+                cls._in_flight[path] = cls._in_flight.get(path, 0) + 1
+                cls.peak_files_in_flight = max(cls.peak_files_in_flight, len(cls._in_flight))
+            try:
+                time.sleep(0.02)
+                return read(*args, **kw)
+            finally:
+                with cls._lock:
+                    cls._in_flight[path] -= 1
+                    if not cls._in_flight[path]:
+                        del cls._in_flight[path]
+
+        f.read = slow_read
+        return f
+
+
+def test_parquet_reader_stage_fetches_group_files_concurrently():
+    fsspec.register_implementation("slowmem", _SlowMemoryFileSystem, clobber=True)
+    files = []
+    for i in range(8):
+        path = f"slowmem://concurrent/part_{i}.parquet"
+        pd.DataFrame(_sample_records(start=i * 2, n=2)).to_parquet(path, index=False)
+        files.append(path)
+    _SlowMemoryFileSystem._in_flight, _SlowMemoryFileSystem.peak_files_in_flight = {}, 0
+
+    out = ParquetReaderStage(read_kwargs={"storage_options": {}}).process(_make_file_group_task(files))
+
+    assert out.to_pandas()["text"].tolist() == [f"doc_{i}" for i in range(16)]
+    # Object-store latency is paid per request; reading one file at a time serialises it across the group.
+    assert _SlowMemoryFileSystem.peak_files_in_flight > 1
+
+
+@pytest.mark.parametrize("read_kwargs", [{}, {"engine": "pyarrow"}], ids=["defaults", "explicit_pyarrow_engine"])
+def test_parquet_reader_stage_reads_and_concatenates(sample_parquet_files: list[str], read_kwargs: dict):
     task = _make_file_group_task(sample_parquet_files[:2])
-    stage = ParquetReaderStage(fields=None)
 
-    # Track calls to pd.read_parquet and pd.concat using mock.patch with wraps
-    with (
-        patch(
-            "nemo_curator.stages.text.io.reader.parquet.pd.read_parquet", wraps=pd.read_parquet
-        ) as mock_read_parquet,
-        patch("nemo_curator.stages.text.io.reader.parquet.pd.concat", wraps=pd.concat) as mock_concat,
-    ):
-        out = stage.process(task)
-        assert isinstance(out, DocumentBatch)
-        assert out._metadata == {"source_files": sample_parquet_files[:2]}
+    out = ParquetReaderStage(read_kwargs=read_kwargs, fields=None).process(task)
 
-        df = out.to_pandas()
-        assert isinstance(df, pd.DataFrame)
-        assert len(df) == 4  # 2 files * 2 records each = 4 records
-        assert {"text", "category", "score"}.issubset(set(df.columns))
-
-        # Verify pd.read_parquet was called once per file
-        assert mock_read_parquet.call_count == 2
-        assert mock_read_parquet.call_args_list[0][0][0] == sample_parquet_files[0]
-        assert mock_read_parquet.call_args_list[1][0][0] == sample_parquet_files[1]
-
-        # Verify pd.concat was called once with ignore_index=True
-        assert mock_concat.call_count == 1
-        assert mock_concat.call_args[1].get("ignore_index") is True
+    assert isinstance(out, DocumentBatch)
+    assert out._metadata == {"source_files": sample_parquet_files[:2]}
+    df = out.to_pandas()
+    assert df["text"].tolist() == ["doc_0", "doc_1", "doc_2", "doc_3"]  # file order, then row order
+    assert list(df.columns) == ["text", "category", "score"]
+    assert all(isinstance(dtype, pd.ArrowDtype) for dtype in df.dtypes)
+    assert isinstance(df.index, pd.RangeIndex)
 
 
 class TestParquetReaderStorageOptionsAndColumns:
@@ -114,25 +148,26 @@ class TestParquetReaderStorageOptionsAndColumns:
         assert list(df.columns) == ["text"]
         assert len(df) == 3
 
-    def test_storage_options_via_read_kwargs(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-        f = tmp_path / "a.parquet"
-        _write_parquet_file(f, _sample_records(0, 1))
-        # Reader should use read_kwargs storage options
-        task = _make_file_group_task([str(f)])
-        stage = ParquetReaderStage(read_kwargs={"storage_options": {"auto_mkdir": True}})
+    @pytest.mark.parametrize(
+        ("prefix", "storage_options"),
+        [
+            ("memory://parquet-reader/remote/", {}),
+            # dir:// only resolves when storage_options reach the filesystem: they name its root and target.
+            ("dir://", {"path": "/parquet-reader/remote", "target_protocol": "memory"}),
+        ],
+        ids=["memory_url", "storage_options_required"],
+    )
+    def test_reads_fsspec_urls_with_storage_options(self, prefix: str, storage_options: dict):
+        for i in range(2):
+            pd.DataFrame(_sample_records(i * 2, 2)).to_parquet(
+                f"memory://parquet-reader/remote/{i}.parquet", index=False
+            )
+        files = [f"{prefix}{i}.parquet" for i in range(2)]
+        stage = ParquetReaderStage(read_kwargs={"storage_options": storage_options})
 
-        seen: dict[str, object] = {}
+        df = stage.process(_make_file_group_task(files)).to_pandas()
 
-        def fake_read_parquet(_path: object, *_args: object, **kwargs: object) -> pd.DataFrame:
-            seen["storage_options"] = kwargs.get("storage_options") if isinstance(kwargs, dict) else None
-            return pd.DataFrame(_sample_records(0, 1))
-
-        monkeypatch.setattr(pd, "read_parquet", fake_read_parquet)
-
-        out = stage.process(task)
-        assert seen["storage_options"] == {"auto_mkdir": True}
-        df = out.to_pandas()
-        assert len(df) == 1
+        assert df["text"].tolist() == ["doc_0", "doc_1", "doc_2", "doc_3"]
 
 
 def test_parquet_reader_stage_pandas_errors_when_some_columns_missing(tmp_path: Path):
@@ -175,38 +210,76 @@ def test_parquet_reader_stage_empty_file_uses_base_reader_policy(tmp_path: Path)
     assert out.to_pandas().columns.tolist() == ["text", "score"]
 
 
-def test_parquet_reader_stage_pyarrow_reads_and_concatenates(tmp_path: Path):
-    f1 = tmp_path / "a.parquet"
-    f2 = tmp_path / "b.parquet"
-    _write_parquet_file(f1, _sample_records(0, 1))
-    _write_parquet_file(f2, _sample_records(1, 2))
+def _per_file_reference(paths: list[str], **read_kwargs: object) -> pd.DataFrame:
+    """What the stage returned before group reads: one pd.read_parquet per file, then concat."""
+    kwargs = {"engine": "pyarrow", "dtype_backend": "pyarrow", **read_kwargs}
+    return pd.concat((pd.read_parquet(path, **kwargs) for path in paths), ignore_index=True)
 
-    task = _make_file_group_task([str(f1), str(f2)])
-    stage = ParquetReaderStage(read_kwargs={"engine": "pyarrow"}, fields=None)
 
-    # Track calls to pd.read_parquet and pd.concat using mock.patch with wraps
-    with (
-        patch(
-            "nemo_curator.stages.text.io.reader.parquet.pd.read_parquet", wraps=pd.read_parquet
-        ) as mock_read_parquet,
-        patch("nemo_curator.stages.text.io.reader.parquet.pd.concat", wraps=pd.concat) as mock_concat,
-    ):
-        out = stage.process(task)
-        table = out.to_pyarrow()
-        assert isinstance(table, pa.Table)
-        assert table.num_rows == 3
-        assert {"text", "category", "score"}.issubset(set(table.column_names))
+_EQUIVALENCE_CASES = {
+    # case id: (one DataFrame per file, stage fields, extra read_kwargs)
+    "column_only_in_second_file": ([pd.DataFrame({"a": [1]}), pd.DataFrame({"a": [2], "b": ["x"]})], None, {}),
+    "column_only_in_first_file": ([pd.DataFrame({"a": [1], "b": ["x"]}), pd.DataFrame({"a": [2]})], None, {}),
+    "non_range_index": ([pd.DataFrame({"a": [1, 2]}, index=[10, 20]), pd.DataFrame({"a": [3]}, index=[5])], None, {}),
+    "int_vs_string_column": ([pd.DataFrame({"a": [1]}), pd.DataFrame({"a": ["x"]})], None, {}),
+    "empty_and_nonempty_file": (
+        [pd.DataFrame({"a": pd.Series([], dtype="int64")}), pd.DataFrame({"a": [1]})],
+        None,
+        {},
+    ),
+    "fields_projection": ([pd.DataFrame(_sample_records(i * 2, 2)) for i in range(3)], ["text"], {}),
+    "numpy_nullable_backend": (
+        [pd.DataFrame(_sample_records(i * 2, 2)) for i in range(2)],
+        None,
+        {"dtype_backend": "numpy_nullable"},
+    ),
+    "filters": ([pd.DataFrame(_sample_records(i * 2, 2)) for i in range(2)], None, {"filters": [("score", ">", 0.5)]}),
+}
 
-        # Verify pd.read_parquet was called once per file
-        assert mock_read_parquet.call_count == 2
-        assert mock_read_parquet.call_args_list[0][0][0] == str(f1)
-        assert mock_read_parquet.call_args_list[1][0][0] == str(f2)
-        # Verify engine was passed correctly
-        assert mock_read_parquet.call_args_list[0][1].get("engine") == "pyarrow"
 
-        # Verify pd.concat was called once with ignore_index=True
-        assert mock_concat.call_count == 1
-        assert mock_concat.call_args[1].get("ignore_index") is True
+@pytest.mark.parametrize(
+    ("frames", "fields", "read_kwargs"), _EQUIVALENCE_CASES.values(), ids=_EQUIVALENCE_CASES.keys()
+)
+def test_parquet_reader_stage_matches_per_file_reads(
+    tmp_path: Path, frames: list[pd.DataFrame], fields: list[str] | None, read_kwargs: dict
+):
+    paths = []
+    for i, frame in enumerate(frames):
+        path = tmp_path / f"{i}.parquet"
+        frame.to_parquet(path)
+        paths.append(str(path))
+    expected = _per_file_reference(paths, **read_kwargs, **({"columns": fields} if fields else {}))
+
+    out = ParquetReaderStage(fields=fields, read_kwargs=read_kwargs, allow_empty=True).process(
+        _make_file_group_task(paths)
+    )
+
+    pd.testing.assert_frame_equal(out.to_pandas(), expected)
+
+
+def test_parquet_reader_stage_reads_group_spanning_filesystems(tmp_path: Path):
+    local = tmp_path / "local.parquet"
+    _write_parquet_file(local, _sample_records(0, 2))
+    remote = "memory://parquet-reader/mixed/remote.parquet"
+    pd.DataFrame(_sample_records(2, 2)).to_parquet(remote, index=False)
+    paths = [str(local), remote]
+
+    out = ParquetReaderStage().process(_make_file_group_task(paths))
+
+    pd.testing.assert_frame_equal(out.to_pandas(), _per_file_reference(paths))
+
+
+def test_parquet_reader_stage_fields_fill_nulls_for_files_missing_the_column(tmp_path: Path):
+    # Per-file reads raised on the first file lacking a requested column; a group read returns nulls for it,
+    # as it already does for every column when fields is None.
+    paths = [str(tmp_path / "a.parquet"), str(tmp_path / "ab.parquet")]
+    pd.DataFrame({"a": [1]}).to_parquet(paths[0], index=False)
+    pd.DataFrame({"a": [2], "b": ["x"]}).to_parquet(paths[1], index=False)
+
+    df = ParquetReaderStage(fields=["b"]).process(_make_file_group_task(paths)).to_pandas()
+
+    assert df["b"].isna().tolist() == [True, False]
+    assert df["b"].iloc[1] == "x"
 
 
 def test_parquet_reader_stage_pyarrow_errors_when_some_columns_missing(tmp_path: Path):
