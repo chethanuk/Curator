@@ -211,6 +211,8 @@ class TestHeadPortFile:
         client = SlurmRayClient()
         path = client._head_port_file("42")
         assert os.path.basename(path) == "ray_head_port_42"
+        # Scoped by UID so a second user on the same node is not blocked by the first user's file.
+        assert os.path.dirname(path) == f"/tmp/ray_port_broadcast_{os.getuid()}"  # noqa: S108
 
     def test_custom_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("RAY_PORT_BROADCAST_DIR", str(tmp_path))
