@@ -170,12 +170,9 @@ def init_cluster(  # noqa: PLR0913
         ray_command.extend(["--object-store-memory", str(object_store_memory)])
     ray_command.extend(["--disable-usage-stats"])
     if enable_object_spilling:
-        ray_command.extend(
-            [
-                "--system-config",
-                '{"local_fs_capacity_threshold": 0.95, "object_spilling_config": "{ "type": "filesystem", "params": {"directory_path": "/tmp/ray_spill", "buffer_size": 1000000 } }"}',
-            ]
-        )
+        # The spill directory is left to Ray, which defaults it to the session directory under
+        # --temp-dir. Naming one here would put every user's spilled objects in the same place.
+        ray_command.extend(["--system-config", '{"local_fs_capacity_threshold": 0.95}'])
     if num_gpus:
         ray_command.extend(["--num-gpus", str(num_gpus)])
     if num_cpus:

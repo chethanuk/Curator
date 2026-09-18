@@ -34,6 +34,7 @@ from nemo_curator.core.constants import (
     DEFAULT_RAY_DASHBOARD_PORT,
     DEFAULT_RAY_METRICS_PORT,
     DEFAULT_RAY_PORT,
+    DEFAULT_RAY_PORT_BROADCAST_DIR,
     DEFAULT_RAY_TEMP_DIR,
 )
 from nemo_curator.core.utils import (
@@ -455,10 +456,11 @@ class SlurmRayClient(RayClient):
         """Return path to the shared port-broadcast file for this job.
 
         Must be on a filesystem visible to ALL nodes (Lustre, not /tmp).
-        Uses env var ``RAY_PORT_BROADCAST_DIR`` if set, otherwise falls back to
-        ``/tmp`` (works on single-node or when /tmp is shared, e.g. via NFS).
+        Uses env var ``RAY_PORT_BROADCAST_DIR`` if set, otherwise falls back to a
+        per-user directory under ``/tmp`` (works on single-node or when /tmp is
+        shared, e.g. via NFS).
         """
-        broadcast_dir = os.environ.get("RAY_PORT_BROADCAST_DIR", "/tmp")  # noqa: S108
+        broadcast_dir = os.environ.get("RAY_PORT_BROADCAST_DIR", DEFAULT_RAY_PORT_BROADCAST_DIR)
         os.makedirs(broadcast_dir, exist_ok=True)
         return os.path.join(broadcast_dir, f"ray_head_port_{slurm_job_id}")
 

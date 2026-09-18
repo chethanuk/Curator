@@ -73,6 +73,11 @@ def clean_env():
 # -----------------------------------------------------------------------------
 
 
+def test_ray_client_default_temp_dir_is_user_scoped():
+    """The default Ray temp dir must not be one path every user on a shared host writes to."""
+    assert RayClient().ray_temp_dir == f"/tmp/ray_{os.getuid()}"  # noqa: S108
+
+
 def test_get_ray_client_single_start(clean_env: pytest.fixture):
     client = None
     try:
