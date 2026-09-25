@@ -511,6 +511,7 @@ ignore = [
   "MAINTAINERS",
   "CODEOWNERS",
   ".gitattributes",
+  ".rayignore",
   ".gitmodules",
   ".markdownlint.json",
   ".secrets.baseline",
