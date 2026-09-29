@@ -84,7 +84,7 @@ $RAY_TEMP_DIR/session_latest/logs/ray-data/ray-data.log
 ```
 
 Set `RAY_TEMP_DIR` with `RayClient(ray_temp_dir=...)` or
-`SlurmRayClient(ray_temp_dir=...)`; the default is `~/.ray`. Ray can also resolve
+`SlurmRayClient(ray_temp_dir=...)`; the default is `/tmp/ray_<uid>`. Ray can also resolve
 the directory with `ray.data._internal.logging.get_log_directory()`.
 
 Events are emitted on scheduler **state changes**, not on every tick. Actor counts
@@ -319,7 +319,7 @@ only when the Curator API has no equivalent, and set them before pipeline execut
 | Goal | API or environment variable | Default / scope |
 |---|---|---|
 | Object-store capacity | `RayClient(object_store_memory=N)` or `SlurmRayClient(...)` | Ray initialization setting, in bytes |
-| Ray log directory | `RayClient(ray_temp_dir=PATH)` or `SlurmRayClient(...)` | `~/.ray` |
+| Ray log directory | `RayClient(ray_temp_dir=PATH)` or `SlurmRayClient(...)` | `/tmp/ray_<uid>` |
 | Enable Curator diagnostics | `NEMO_CURATOR_RAY_DATA_DIAGNOSTICS=1` | Off; set before driver startup |
 | Actor scale-up threshold | `DataContext.get_current().autoscaling_config.actor_pool_util_upscaling_threshold = R` | `1.75` |
 | Actor scale-down threshold | `DataContext.get_current().autoscaling_config.actor_pool_util_downscaling_threshold = R` | `0.5` |

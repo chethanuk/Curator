@@ -68,7 +68,8 @@ class RayClient:
         num_gpus: The number of GPUs to use.
         num_cpus: The number of CPUs to use.
         object_store_memory: The amount of memory to use for the object store.
-        enable_object_spilling: Whether to enable object spilling.
+        enable_object_spilling: No-op, kept for compatibility. Ray spills objects to
+            ``<ray_temp_dir>/session_*`` by default.
         ray_stdouterr_capture_file: The file to capture stdout/stderr to.
         metrics_dir: The directory for Prometheus/Grafana metrics data. If None, uses the per-user default.
 

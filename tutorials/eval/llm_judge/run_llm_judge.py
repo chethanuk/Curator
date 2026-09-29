@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 
 from nemo_curator.core.client import RayClient
+from nemo_curator.core.constants import DEFAULT_RAY_TEMP_DIR
 from nemo_curator.eval.llm_judge import LLMJudgeWorkflow
 
 
@@ -79,8 +80,8 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--ray-temp-dir",
-        default="/tmp/ray",  # noqa: S108
-        help="Ray runtime directory (default: /tmp/ray).",
+        default=DEFAULT_RAY_TEMP_DIR,
+        help=f"Ray runtime directory (default: {DEFAULT_RAY_TEMP_DIR}).",
     )
     parser.add_argument(
         "--num-cpus",

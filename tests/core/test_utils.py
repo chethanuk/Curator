@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import json
 import subprocess
 
 import pytest
@@ -40,15 +39,11 @@ def test_ignore_ray_head_node_env_parsing(monkeypatch: pytest.MonkeyPatch, value
     assert ignore_ray_head_node() is expected
 
 
-@pytest.mark.parametrize("enable_object_spilling", [True, False])
-def test_init_cluster_never_names_a_shared_spill_directory(
-    monkeypatch: pytest.MonkeyPatch,
-    enable_object_spilling: bool,
-) -> None:
+def test_init_cluster_leaves_object_spilling_to_ray(monkeypatch: pytest.MonkeyPatch) -> None:
     """Spilled objects must land under ``--temp-dir``, which is per-user, not a shared path.
 
-    ``ray start --system-config`` takes JSON, so an unparseable value stops the cluster from
-    starting at all. Both properties are asserted on the command Curator actually builds.
+    Ray spills to ``<temp-dir>/session_*`` by default, so ``enable_object_spilling`` is a no-op
+    and must build the same ``ray start`` command either way.
     """
     captured: list[list[str]] = []
 
@@ -58,26 +53,29 @@ def test_init_cluster_never_names_a_shared_spill_directory(
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
     monkeypatch.setattr(ray.util, "register_serializer", lambda *_a, **_kw: None)
+    # init_cluster writes these to os.environ; delenv makes monkeypatch restore them at teardown.
+    for name in (
+        "DASHBOARD_METRIC_PORT",
+        "AUTOSCALER_METRIC_PORT",
+        "XENNA_RAY_METRICS_PORT",
+        "RAY_SERVE_ENABLE_HA_PROXY",
+        "RAY_SERVE_HAPROXY_METRICS_PORT",
+        "RAY_SERVE_HAPROXY_STATS_PORT",
+    ):
+        monkeypatch.delenv(name, raising=False)
 
-    init_cluster(
-        ray_port=6379,
-        ray_temp_dir="/tmp/ray_temp_dir_under_test",  # noqa: S108
-        ray_dashboard_port=8265,
-        ray_metrics_port=8080,
-        ray_client_server_port=10001,
-        ray_dashboard_host="127.0.0.1",
-        enable_object_spilling=enable_object_spilling,
-        block=False,
-    )
+    for enable_object_spilling in (True, False):
+        init_cluster(
+            ray_port=6379,
+            ray_temp_dir="/tmp/ray_temp_dir_under_test",  # noqa: S108
+            ray_dashboard_port=8265,
+            ray_metrics_port=8080,
+            ray_client_server_port=10001,
+            ray_dashboard_host="127.0.0.1",
+            enable_object_spilling=enable_object_spilling,
+            block=False,
+        )
 
-    (ray_command,) = captured
-    assert "/tmp/ray_spill" not in " ".join(ray_command)  # noqa: S108
-
-    if not enable_object_spilling:
-        assert "--system-config" not in ray_command
-        return
-
-    system_config = ray_command[ray_command.index("--system-config") + 1]
-    parsed = json.loads(system_config)
-    assert parsed == {"local_fs_capacity_threshold": 0.95}
-    assert "object_spilling_config" not in parsed
+    with_spilling, without_spilling = captured
+    assert with_spilling == without_spilling
+    assert "/tmp/ray_spill" not in " ".join(with_spilling)  # noqa: S108
