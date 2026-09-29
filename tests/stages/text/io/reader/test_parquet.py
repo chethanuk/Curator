@@ -158,13 +158,15 @@ class TestParquetReaderStorageOptionsAndColumns:
         ],
         ids=["memory_url", "storage_options_required"],
     )
-    def test_reads_fsspec_urls_with_storage_options(self, prefix: str, storage_options: dict):
+    # filters take the per-file pd.read_parquet path, which must get storage_options too.
+    @pytest.mark.parametrize("extra_kwargs", [{}, {"filters": [("score", ">=", 0.0)]}], ids=["group_scan", "per_file"])
+    def test_reads_fsspec_urls_with_storage_options(self, prefix: str, storage_options: dict, extra_kwargs: dict):
         for i in range(2):
             pd.DataFrame(_sample_records(i * 2, 2)).to_parquet(
                 f"memory://parquet-reader/remote/{i}.parquet", index=False
             )
         files = [f"{prefix}{i}.parquet" for i in range(2)]
-        stage = ParquetReaderStage(read_kwargs={"storage_options": storage_options})
+        stage = ParquetReaderStage(read_kwargs={"storage_options": storage_options, **extra_kwargs})
 
         df = stage.process(_make_file_group_task(files)).to_pandas()
 
@@ -236,6 +238,17 @@ _EQUIVALENCE_CASES = {
         {},
     ),
     "int_vs_string_column": ([pd.DataFrame({"a": [1]}), pd.DataFrame({"a": ["x"]})], None, {}),
+    "null_column_vs_string": ([pd.DataFrame({"a": [None]}), pd.DataFrame({"a": ["x"]})], None, {}),
+    "struct_field_added_in_second_file": (
+        [pd.DataFrame({"s": [{"x": 1}]}), pd.DataFrame({"s": [{"x": 2, "y": "q"}]})],
+        None,
+        {},
+    ),
+    "list_of_struct_field_added_in_second_file": (
+        [pd.DataFrame({"s": [[{"x": 1}]]}), pd.DataFrame({"s": [[{"x": 2, "y": "q"}]]})],
+        None,
+        {},
+    ),
     "empty_and_nonempty_file": (
         [pd.DataFrame({"a": pd.Series([], dtype="int64")}), pd.DataFrame({"a": [1]})],
         None,
@@ -290,6 +303,16 @@ def test_parquet_reader_stage_reads_same_protocol_paths_on_different_filesystems
         with fsspec.open(f"memory://parquet-reader/zips/{name}.zip", "wb") as f, zipfile.ZipFile(f, "w") as archive:
             archive.writestr("part.parquet", pd.DataFrame({"a": [value]}).to_parquet(index=False))
         paths.append(f"zip://part.parquet::memory://parquet-reader/zips/{name}.zip")
+
+    out = ParquetReaderStage().process(_make_file_group_task(paths))
+
+    pd.testing.assert_frame_equal(out.to_pandas(), _per_file_reference(paths))
+
+
+def test_parquet_reader_stage_reads_directory_path(tmp_path: Path):
+    for i in range(2):
+        _write_parquet_file(tmp_path / f"{i}.parquet", _sample_records(i * 2, 2))
+    paths = [str(tmp_path)]
 
     out = ParquetReaderStage().process(_make_file_group_task(paths))
 

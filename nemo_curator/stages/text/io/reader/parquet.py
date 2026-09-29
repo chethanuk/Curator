@@ -46,10 +46,13 @@ def _read_single_scan(
     paths = [path for _, path in resolved]
     # Exact type: a LocalFileSystem subclass may override how files are opened.
     pa_fs = ArrowLocalFileSystem() if type(fs) is LocalFileSystem else PyFileSystem(FSSpecHandler(fs))
-    # One footer read per file, concurrently. The unified schema keeps a column that only later files have
+    # Footers are read concurrently. The unified schema keeps a column that only later files have
     # (pyarrow would otherwise take the first file's schema and drop it), as pd.concat does.
-    with ThreadPoolExecutor() as pool:
-        schemas = list(pool.map(lambda path: pq.read_schema(path, filesystem=pa_fs), paths))
+    try:
+        with ThreadPoolExecutor() as pool:
+            schemas = list(pool.map(lambda path: pq.read_schema(path, filesystem=pa_fs), paths))
+    except OSError:
+        return None  # e.g. a directory path, which pd.read_parquet reads as a dataset
     # to_pandas applies the first file's pandas metadata to the whole table, so a physical index column
     # stored by only some files would come back as a data column; per-file reads drop every index.
     if len({_physical_index_columns(schema) for schema in schemas}) > 1:
@@ -58,6 +61,10 @@ def _read_single_scan(
         schema = pa.unify_schemas(schemas)
     except (pa.ArrowTypeError, pa.ArrowInvalid):
         return None  # conflicting column types: let pd.concat promote them, as before
+    # Unification also widens types (null -> string, struct<x> -> struct<x, y>), which pd.concat would turn into
+    # different dtypes (string vs large_string, object), so any column whose type changed keeps per-file reads.
+    if any(s.field(name).type != schema.field(name).type for s in schemas for name in s.names):
+        return None
     table = pq.read_table(paths, filesystem=pa_fs, schema=schema, columns=columns, use_pandas_metadata=True)
     # Same conversion pd.read_parquet does for dtype_backend="pyarrow"; the reset stands in for ignore_index=True.
     return table.to_pandas(types_mapper=pd.ArrowDtype).reset_index(drop=True)
