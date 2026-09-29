@@ -507,6 +507,7 @@ Do not pass Ray Serve's `deployment_config` to `DynamoVLLMModelConfig`. Use `num
 ### Model Does Not Become Healthy
 
 - Increase `health_check_timeout_s` for large model downloads or slow actor-environment creation.
+- On Ray Serve, a deployment whose replicas keep failing to start (for example, GPU out of memory) now raises `RuntimeError` with Ray Serve's error message as soon as Serve reports it, instead of a `TimeoutError` after `health_check_timeout_s`.
 - Check the model name returned by `/v1/models`; local paths often need an explicit `model_name` alias.
 - Confirm the requested tensor-parallel groups fit the cluster topology.
 - For Dynamo, inspect subprocess logs under the Ray session's `nemo_curator_dynamo_<id>` directory.

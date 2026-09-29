@@ -102,22 +102,32 @@ class RayServeBackend(InferenceBackend):
         from ray import serve
         from ray.serve.schema import ApplicationStatus, DeploymentStatus, DeploymentStatusTrigger
 
-        app_status = serve.status().applications.get(self._server.name)
+        try:
+            app_status = serve.status().applications.get(self._server.name)
+        except Exception:  # noqa: BLE001
+            # A controller hiccup mid-load is not a deploy failure; keep polling.
+            logger.debug("serve.status() failed while waiting for the application", exc_info=True)
+            return
         if app_status is None:
             return
-        # A single failed health check also marks a deployment UNHEALTHY, and Serve
-        # recovers from that on its own. Replicas that keep failing to start past
-        # Serve's retry threshold (e.g. GPU OOM) do not, so only that trigger counts.
+        # DEPLOY_FAILED/UNHEALTHY alone is not final: after a failed health check Serve
+        # replaces the replica and the deployment can go back to HEALTHY. The triggers
+        # below mean replicas (or the deployment actor) failed to start through Serve's
+        # whole retry budget in a row (e.g. GPU OOM). If no replica ever started, Serve
+        # stops retrying; otherwise it keeps trying, but we treat that as failed rather
+        # than wait out health_check_timeout_s.
+        fatal_triggers = {
+            DeploymentStatusTrigger.REPLICA_STARTUP_FAILED,
+            DeploymentStatusTrigger.DEPLOYMENT_ACTOR_FAILED,
+        }
         failed = [
             f"{name}: {deployment.message}"
             for name, deployment in app_status.deployments.items()
-            if deployment.status == DeploymentStatus.DEPLOY_FAILED
-            or (
-                deployment.status == DeploymentStatus.UNHEALTHY
-                and deployment.status_trigger == DeploymentStatusTrigger.REPLICA_STARTUP_FAILED
-            )
+            if deployment.status in {DeploymentStatus.DEPLOY_FAILED, DeploymentStatus.UNHEALTHY}
+            and deployment.status_trigger in fatal_triggers
         ]
-        if failed or app_status.status == ApplicationStatus.DEPLOY_FAILED:
+        # With no deployments listed, DEPLOY_FAILED means the app itself failed to build.
+        if failed or (not app_status.deployments and app_status.status == ApplicationStatus.DEPLOY_FAILED):
             details = "; ".join(failed) or app_status.message
             msg = f"Ray Serve application {self._server.name!r} is {app_status.status.value}: {details}"
             raise RuntimeError(msg)

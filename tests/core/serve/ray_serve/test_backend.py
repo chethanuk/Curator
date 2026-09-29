@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import sys
 from unittest import mock
 
 import pytest
@@ -25,7 +26,7 @@ ServeStatus = schema.ServeStatus
 
 
 def _app(
-    status: str, deployment: tuple[str, str] | None = None, message: str = ""
+    status: str, deployment: tuple[str, str] | None = None, message: str = "", deployment_message: str = ""
 ) -> dict[str, ApplicationStatusOverview]:
     deployments = {}
     if deployment is not None:
@@ -33,7 +34,7 @@ def _app(
             status=schema.DeploymentStatus(deployment[0]),
             status_trigger=schema.DeploymentStatusTrigger(deployment[1]),
             replica_states={},
-            message="CUDA out of memory",
+            message=deployment_message,
         )
     return {
         "curator-app": ApplicationStatusOverview(
@@ -82,14 +83,28 @@ class TestRayServeBackend:
                 _app("UNHEALTHY", ("UNHEALTHY", "HEALTH_CHECK_FAILED")), None, id="health-check-failed-recovers"
             ),
             pytest.param(
-                _app("UNHEALTHY", ("UNHEALTHY", "REPLICA_STARTUP_FAILED")),
+                _app("DEPLOY_FAILED", ("DEPLOY_FAILED", "HEALTH_CHECK_FAILED")),
+                None,
+                id="deploy-failed-health-check-recovers",
+            ),
+            pytest.param(
+                _app("UNHEALTHY", ("UNHEALTHY", "REPLICA_STARTUP_FAILED"), deployment_message="CUDA out of memory"),
                 "is UNHEALTHY: LLMServer: CUDA out of memory",
                 id="replica-startup-retries-exhausted",
             ),
             pytest.param(
-                _app("DEPLOY_FAILED", ("DEPLOY_FAILED", "REPLICA_STARTUP_FAILED")),
+                _app(
+                    "DEPLOY_FAILED",
+                    ("DEPLOY_FAILED", "REPLICA_STARTUP_FAILED"),
+                    deployment_message="CUDA out of memory",
+                ),
                 "is DEPLOY_FAILED: LLMServer: CUDA out of memory",
                 id="deploy-failed",
+            ),
+            pytest.param(
+                _app("DEPLOY_FAILED", ("DEPLOY_FAILED", "DEPLOYMENT_ACTOR_FAILED"), deployment_message="actor died"),
+                "is DEPLOY_FAILED: LLMServer: actor died",
+                id="deployment-actor-failed",
             ),
             pytest.param(
                 _app("DEPLOY_FAILED", message="Failed to build app"),
@@ -109,3 +124,26 @@ class TestRayServeBackend:
             else:
                 with pytest.raises(RuntimeError, match=error):
                     backend._raise_if_app_failed()
+
+    def test_raise_if_app_failed_ignores_status_errors(self) -> None:
+        backend = RayServeBackend(InferenceServer(models=[], name="curator-app"))
+
+        with mock.patch("ray.serve.status", side_effect=ConnectionError("controller restarting")):
+            backend._raise_if_app_failed()
+
+    def test_deploy_cleans_up_and_raises_when_app_fails(self) -> None:
+        server = InferenceServer(models=[], name="curator-app", health_check_timeout_s=30)
+        backend = RayServeBackend(server)
+        failed = ServeStatus(applications=_app("DEPLOY_FAILED", message="Failed to build app"))
+
+        with (
+            mock.patch.dict(sys.modules, {"ray.serve.llm": mock.MagicMock()}),
+            mock.patch("ray.serve.start"),
+            mock.patch("ray.serve.run"),
+            mock.patch("ray.serve.status", return_value=failed),
+            mock.patch.object(backend, "_cleanup_failed_deploy") as cleanup,
+            pytest.raises(RuntimeError, match="is DEPLOY_FAILED: Failed to build app"),
+        ):
+            backend._deploy()
+
+        cleanup.assert_called_once()
