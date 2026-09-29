@@ -19,7 +19,30 @@ import pytest
 from nemo_curator.core.serve import InferenceServer, RayServeModelConfig
 from nemo_curator.core.serve.ray_serve.backend import RayServeBackend
 
-ApplicationStatus = pytest.importorskip("ray.serve.schema", reason="ray[serve] not installed").ApplicationStatus
+schema = pytest.importorskip("ray.serve.schema", reason="ray[serve] not installed")
+ApplicationStatusOverview = schema.ApplicationStatusOverview
+ServeStatus = schema.ServeStatus
+
+
+def _app(
+    status: str, deployment: tuple[str, str] | None = None, message: str = ""
+) -> dict[str, ApplicationStatusOverview]:
+    deployments = {}
+    if deployment is not None:
+        deployments["LLMServer"] = schema.DeploymentStatusOverview(
+            status=schema.DeploymentStatus(deployment[0]),
+            status_trigger=schema.DeploymentStatusTrigger(deployment[1]),
+            replica_states={},
+            message="CUDA out of memory",
+        )
+    return {
+        "curator-app": ApplicationStatusOverview(
+            status=schema.ApplicationStatus(status),
+            message=message,
+            last_deployed_time_s=0.0,
+            deployments=deployments,
+        )
+    }
 
 
 class TestRayServeBackend:
@@ -50,31 +73,39 @@ class TestRayServeBackend:
         assert result.runtime_env["env_vars"]["VLLM_LOGGING_LEVEL"] == "WARNING"
         assert result.runtime_env["env_vars"]["RAY_SERVE_LOG_TO_STDERR"] == "0"
 
-    @pytest.mark.parametrize("status", [ApplicationStatus.DEPLOY_FAILED, ApplicationStatus.UNHEALTHY])
-    def test_raise_if_app_failed_surfaces_ray_serve_message(self, status: ApplicationStatus) -> None:
-        backend = RayServeBackend(InferenceServer(models=[], name="curator-app"))
-        serve_status = mock.Mock(
-            applications={"curator-app": mock.Mock(status=status, message="Replica died: CUDA out of memory")}
-        )
-
-        with (
-            mock.patch("ray.serve.status", return_value=serve_status),
-            pytest.raises(RuntimeError, match="Replica died: CUDA out of memory"),
-        ):
-            backend._raise_if_app_failed()
-
     @pytest.mark.parametrize(
-        "applications",
+        ("applications", "error"),
         [
-            pytest.param({}, id="application-not-registered-yet"),
+            pytest.param({}, None, id="application-not-registered-yet"),
+            pytest.param(_app("RUNNING", ("HEALTHY", "CONFIG_UPDATE_COMPLETED")), None, id="running"),
             pytest.param(
-                {"curator-app": mock.Mock(status=ApplicationStatus.RUNNING, message="")},
-                id="application-running",
+                _app("UNHEALTHY", ("UNHEALTHY", "HEALTH_CHECK_FAILED")), None, id="health-check-failed-recovers"
+            ),
+            pytest.param(
+                _app("UNHEALTHY", ("UNHEALTHY", "REPLICA_STARTUP_FAILED")),
+                "is UNHEALTHY: LLMServer: CUDA out of memory",
+                id="replica-startup-retries-exhausted",
+            ),
+            pytest.param(
+                _app("DEPLOY_FAILED", ("DEPLOY_FAILED", "REPLICA_STARTUP_FAILED")),
+                "is DEPLOY_FAILED: LLMServer: CUDA out of memory",
+                id="deploy-failed",
+            ),
+            pytest.param(
+                _app("DEPLOY_FAILED", message="Failed to build app"),
+                "is DEPLOY_FAILED: Failed to build app",
+                id="deploy-failed-without-deployments",
             ),
         ],
     )
-    def test_raise_if_app_failed_ignores_non_terminal_status(self, applications: dict[str, mock.Mock]) -> None:
+    def test_raise_if_app_failed_only_on_unrecoverable_status(
+        self, applications: dict[str, ApplicationStatusOverview], error: str | None
+    ) -> None:
         backend = RayServeBackend(InferenceServer(models=[], name="curator-app"))
 
-        with mock.patch("ray.serve.status", return_value=mock.Mock(applications=applications)):
-            backend._raise_if_app_failed()
+        with mock.patch("ray.serve.status", return_value=ServeStatus(applications=applications)):
+            if error is None:
+                backend._raise_if_app_failed()
+            else:
+                with pytest.raises(RuntimeError, match=error):
+                    backend._raise_if_app_failed()

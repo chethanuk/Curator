@@ -98,16 +98,28 @@ class RayServeBackend(InferenceBackend):
             raise
 
     def _raise_if_app_failed(self) -> None:
-        """Raise with Ray Serve's own diagnosis once the application state is terminal."""
+        """Raise with Ray Serve's own diagnosis once the application cannot come up."""
         from ray import serve
-        from ray.serve.schema import ApplicationStatus
+        from ray.serve.schema import ApplicationStatus, DeploymentStatus, DeploymentStatusTrigger
 
         app_status = serve.status().applications.get(self._server.name)
-        if app_status is not None and app_status.status in (
-            ApplicationStatus.DEPLOY_FAILED,
-            ApplicationStatus.UNHEALTHY,
-        ):
-            msg = f"Ray Serve application {self._server.name!r} is {app_status.status.value}: {app_status.message}"
+        if app_status is None:
+            return
+        # A single failed health check also marks a deployment UNHEALTHY, and Serve
+        # recovers from that on its own. Replicas that keep failing to start past
+        # Serve's retry threshold (e.g. GPU OOM) do not, so only that trigger counts.
+        failed = [
+            f"{name}: {deployment.message}"
+            for name, deployment in app_status.deployments.items()
+            if deployment.status == DeploymentStatus.DEPLOY_FAILED
+            or (
+                deployment.status == DeploymentStatus.UNHEALTHY
+                and deployment.status_trigger == DeploymentStatusTrigger.REPLICA_STARTUP_FAILED
+            )
+        ]
+        if failed or app_status.status == ApplicationStatus.DEPLOY_FAILED:
+            details = "; ".join(failed) or app_status.message
+            msg = f"Ray Serve application {self._server.name!r} is {app_status.status.value}: {details}"
             raise RuntimeError(msg)
 
     @staticmethod
