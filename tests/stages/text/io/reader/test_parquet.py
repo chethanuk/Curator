@@ -14,6 +14,7 @@
 
 import threading
 import time
+import zipfile
 from pathlib import Path
 
 import fsspec
@@ -221,6 +222,19 @@ _EQUIVALENCE_CASES = {
     "column_only_in_second_file": ([pd.DataFrame({"a": [1]}), pd.DataFrame({"a": [2], "b": ["x"]})], None, {}),
     "column_only_in_first_file": ([pd.DataFrame({"a": [1], "b": ["x"]}), pd.DataFrame({"a": [2]})], None, {}),
     "non_range_index": ([pd.DataFrame({"a": [1, 2]}, index=[10, 20]), pd.DataFrame({"a": [3]}, index=[5])], None, {}),
+    "range_index_then_named_index": (
+        [pd.DataFrame({"a": [1]}), pd.DataFrame({"a": [2]}, index=pd.Index([10], name="idx"))],
+        None,
+        {},
+    ),
+    "differently_named_indexes": (
+        [
+            pd.DataFrame({"a": [1]}, index=pd.Index([10], name="i1")),
+            pd.DataFrame({"a": [2]}, index=pd.Index([20], name="i2")),
+        ],
+        None,
+        {},
+    ),
     "int_vs_string_column": ([pd.DataFrame({"a": [1]}), pd.DataFrame({"a": ["x"]})], None, {}),
     "empty_and_nonempty_file": (
         [pd.DataFrame({"a": pd.Series([], dtype="int64")}), pd.DataFrame({"a": [1]})],
@@ -263,6 +277,19 @@ def test_parquet_reader_stage_reads_group_spanning_filesystems(tmp_path: Path):
     remote = "memory://parquet-reader/mixed/remote.parquet"
     pd.DataFrame(_sample_records(2, 2)).to_parquet(remote, index=False)
     paths = [str(local), remote]
+
+    out = ParquetReaderStage().process(_make_file_group_task(paths))
+
+    pd.testing.assert_frame_equal(out.to_pandas(), _per_file_reference(paths))
+
+
+def test_parquet_reader_stage_reads_same_protocol_paths_on_different_filesystems():
+    # Both paths are zip://, but each names a different archive, so each resolves to its own filesystem.
+    paths = []
+    for name, value in [("a", 1), ("b", 2)]:
+        with fsspec.open(f"memory://parquet-reader/zips/{name}.zip", "wb") as f, zipfile.ZipFile(f, "w") as archive:
+            archive.writestr("part.parquet", pd.DataFrame({"a": [value]}).to_parquet(index=False))
+        paths.append(f"zip://part.parquet::memory://parquet-reader/zips/{name}.zip")
 
     out = ParquetReaderStage().process(_make_file_group_task(paths))
 

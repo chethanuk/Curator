@@ -12,14 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
 import pandas as pd
 import pyarrow as pa
-import pyarrow.dataset as ds
 import pyarrow.parquet as pq
-from fsspec.core import split_protocol, strip_protocol, url_to_fs
+from fsspec.core import url_to_fs
 from fsspec.implementations.local import LocalFileSystem
 from pyarrow.fs import FSSpecHandler, PyFileSystem
 from pyarrow.fs import LocalFileSystem as ArrowLocalFileSystem
@@ -38,22 +38,35 @@ _SINGLE_SCAN_KWARGS = frozenset({"engine", "dtype_backend", "columns", "storage_
 def _read_single_scan(
     paths: list[str], columns: list[str] | None, storage_options: dict[str, Any] | None
 ) -> pd.DataFrame | None:
-    """Read a file group in one pyarrow dataset scan. Returns None when the files' schemas do not unify."""
-    fs, _ = url_to_fs(paths[0], **(storage_options or {}))
-    if type(fs) is LocalFileSystem:  # exact type: a subclass may override how files are opened
-        pa_fs, paths = ArrowLocalFileSystem(), [strip_protocol(path) for path in paths]
-    else:
-        pa_fs = PyFileSystem(FSSpecHandler(fs))
-    factory = ds.FileSystemDatasetFactory(pa_fs, paths, ds.ParquetFileFormat(), ds.FileSystemFactoryOptions())
+    """Read a file group in one pyarrow dataset scan. Returns None when one scan cannot reproduce per-file reads."""
+    resolved = [url_to_fs(path, **(storage_options or {})) for path in paths]
+    fs = resolved[0][0]
+    if any(other != fs for other, _ in resolved):
+        return None  # e.g. a local path next to an s3:// one, or zip:// paths in different archives
+    paths = [path for _, path in resolved]
+    # Exact type: a LocalFileSystem subclass may override how files are opened.
+    pa_fs = ArrowLocalFileSystem() if type(fs) is LocalFileSystem else PyFileSystem(FSSpecHandler(fs))
+    # One footer read per file, concurrently. The unified schema keeps a column that only later files have
+    # (pyarrow would otherwise take the first file's schema and drop it), as pd.concat does.
+    with ThreadPoolExecutor() as pool:
+        schemas = list(pool.map(lambda path: pq.read_schema(path, filesystem=pa_fs), paths))
+    # to_pandas applies the first file's pandas metadata to the whole table, so a physical index column
+    # stored by only some files would come back as a data column; per-file reads drop every index.
+    if len({_physical_index_columns(schema) for schema in schemas}) > 1:
+        return None
     try:
-        # Inspect every footer: by default pyarrow takes the first file's schema and drops
-        # columns that only later files have, where pd.concat keeps them.
-        schema = factory.inspect(fragments=None)
+        schema = pa.unify_schemas(schemas)
     except (pa.ArrowTypeError, pa.ArrowInvalid):
         return None  # conflicting column types: let pd.concat promote them, as before
     table = pq.read_table(paths, filesystem=pa_fs, schema=schema, columns=columns, use_pandas_metadata=True)
     # Same conversion pd.read_parquet does for dtype_backend="pyarrow"; the reset stands in for ignore_index=True.
     return table.to_pandas(types_mapper=pd.ArrowDtype).reset_index(drop=True)
+
+
+def _physical_index_columns(schema: pa.Schema) -> tuple[str, ...]:
+    """Index columns a file stores as data; a RangeIndex is stored in the metadata only."""
+    index_columns = (schema.pandas_metadata or {}).get("index_columns", [])
+    return tuple(column for column in index_columns if isinstance(column, str))
 
 
 @dataclass
@@ -99,7 +112,6 @@ class ParquetReaderStage(BaseFileReader):
             and read_kwargs["engine"] == "pyarrow"
             and read_kwargs["dtype_backend"] == "pyarrow"
             and read_kwargs.keys() <= _SINGLE_SCAN_KWARGS
-            and len({split_protocol(path)[0] for path in paths}) == 1
         ):
             df = _read_single_scan(paths, read_kwargs.get("columns"), read_kwargs.get("storage_options"))
             if df is not None:
