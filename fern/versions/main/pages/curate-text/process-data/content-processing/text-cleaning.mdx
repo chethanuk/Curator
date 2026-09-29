@@ -23,6 +23,7 @@ NeMo Curator provides the following modules for cleaning text:
 - `UnicodeReformatter`: Uses [ftfy](https://ftfy.readthedocs.io/en/latest/) to fix broken Unicode characters. Modifies the "text" field of the dataset by default. The module accepts extensive configuration options for fine-tuning Unicode repair behavior. Please see the [ftfy documentation](https://ftfy.readthedocs.io/en/latest/config.html) for more information about parameters used by the `UnicodeReformatter`.
 - `NewlineNormalizer`: Uses regex to replace 3 or more consecutive newline characters in each document with only 2 newline characters.
 - `UrlRemover`: Uses regex to remove all URLs in each document.
+- `LineLevelQualityFilter`: Removes low-quality lines and discards documents that lose too much text. See [Line-Level Quality Filtering](#line-level-quality-filtering).
 
 You can use these modules individually or sequentially in a cleaning pipeline.
 
@@ -78,6 +79,28 @@ if __name__ == "__main__":
 </Tab>
 
 </Tabs>
+
+## Line-Level Quality Filtering
+
+`LineLevelQualityFilter` removes low-quality lines, such as navigation bars, share links, and cookie notices, and keeps the rest of the document. Run it after document-level filters such as `ScoreFilter`. It is a stage, so add it to the pipeline directly rather than through `Modify`.
+
+Each non-blank line is removed by the first rule it fails:
+
+1. `url_only`: the stripped line is a single URL (`remove_url_only_lines=True`).
+2. `nav_pattern`: the line matches the `nav_pattern` regex (off by default).
+3. `boilerplate`: the lowercased line contains one of `boilerplate_strings` (defaults to the policy strings used by `BoilerPlateStringFilter`).
+4. `repetition`: the repeated word ratio is above `max_line_repetition_ratio` (off by default).
+5. `min_words`: the line has fewer than `min_line_words` words (default 5).
+
+A removed line is dropped together with its line break, and kept lines are unchanged. A document is discarded when the ratio of removed words is above `max_removal_ratio` (default 0.3).
+
+```python
+from nemo_curator.stages.text.filters import LineLevelQualityFilter
+
+pipeline.add_stage(LineLevelQualityFilter(nav_pattern=r"^\s*\w+(\s*\|\s*\w+){2,}\s*$"))
+```
+
+The stage reports `lines_removed_<rule>` for each rule, `words_removed`, `words_total`, and `documents_discarded` as custom stage metrics.
 
 ## Custom Text Cleaner
 

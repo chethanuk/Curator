@@ -34,7 +34,8 @@ class LineLevelQualityFilter(ProcessingStage[DocumentBatch, DocumentBatch]):
     Meant to run after document-level filters such as ScoreFilter, not instead of them.
 
     Each non-blank line is split into words with ``get_word_splitter(lang)`` (whitespace
-    for most languages, jieba for "zh", MeCab for "ja") and removed by the first rule it fails,
+    for most languages, jieba for "zh", MeCab for "ja"; the MeCab splitter builds a new tagger on
+    every call, so "ja" costs one tagger per line) and removed by the first rule it fails,
     checked in this order:
 
     1. ``url_only``: the stripped line is a single URL (``remove_url_only_lines``).
@@ -43,8 +44,9 @@ class LineLevelQualityFilter(ProcessingStage[DocumentBatch, DocumentBatch]):
     4. ``repetition``: ``1 - unique_words / words > max_line_repetition_ratio``.
     5. ``min_words``: the line has fewer than ``min_line_words`` words.
 
-    Blank lines are kept and not counted. Kept lines are joined with ``"\\n"``; a document with
-    no removed line keeps its original text unchanged. The document is discarded when
+    Lines are split with ``str.splitlines``. Blank lines are kept and not counted. A removed line is
+    dropped together with its line break; every kept line, including its original line break, is
+    left unchanged. The document is discarded when
     ``words_removed / words_total > max_removal_ratio``. Non-string values pass through untouched.
 
     This is not a full C4 port: the end-mark, long-word, ``javascript``, ``{`` and ``lorem ipsum``
@@ -96,6 +98,9 @@ class LineLevelQualityFilter(ProcessingStage[DocumentBatch, DocumentBatch]):
         except re.error as e:
             msg = f"nav_pattern is not a valid regex: {self.nav_pattern!r}"
             raise ValueError(msg) from e
+        if isinstance(self.boilerplate_strings, str) or not all(self.boilerplate_strings):
+            msg = f"boilerplate_strings must be a tuple of non-empty strings, got {self.boilerplate_strings!r}"
+            raise ValueError(msg)
         self._boilerplate = tuple(s.lower() for s in self.boilerplate_strings)
         self._split_words = get_word_splitter(self.lang)
 
@@ -130,16 +135,17 @@ class LineLevelQualityFilter(ProcessingStage[DocumentBatch, DocumentBatch]):
         if not isinstance(text, str):
             return text, True
 
-        lines = text.splitlines()
+        lines = text.splitlines(keepends=True)
         kept_lines = []
         total = removed = 0
         for line in lines:
             if not line.strip():
                 kept_lines.append(line)
                 continue
-            words = self._split_words(line)
+            content = line.splitlines()[0]
+            words = self._split_words(content)
             total += len(words)
-            rule = self._failed_rule(line, words)
+            rule = self._failed_rule(content, words)
             if rule is None:
                 kept_lines.append(line)
             else:
@@ -153,7 +159,7 @@ class LineLevelQualityFilter(ProcessingStage[DocumentBatch, DocumentBatch]):
             return text, False
         if len(kept_lines) == len(lines):
             return text, True
-        return "\n".join(kept_lines), True
+        return "".join(kept_lines), True
 
     def process(self, batch: DocumentBatch) -> DocumentBatch:
         """

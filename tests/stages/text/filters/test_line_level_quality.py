@@ -57,7 +57,7 @@ def test_cleans_boilerplate_lines_and_keeps_the_document() -> None:
     result = LineLevelQualityFilter(nav_pattern=NAV).process(batch).to_pandas()
 
     assert len(result) == 1
-    assert result["text"].iloc[0] == _lines(C1, C2, "", C3, C4, C5)
+    assert result["text"].iloc[0] == _lines(C1, C2, "", C3, C4, C5) + "\n"
     assert result["id"].iloc[0] == 7
 
 
@@ -65,7 +65,7 @@ def _batch(text: object, name: str = "t") -> DocumentBatch:
     return DocumentBatch(data=pd.DataFrame({"text": [text]}), dataset_name=name)
 
 
-GARDEN_CLEAN = _lines(C1, C2, "", C3, C4, C5)
+GARDEN_CLEAN = _lines(C1, C2, "", C3, C4, C5) + "\n"
 DROPPED = object()
 
 
@@ -74,19 +74,21 @@ DROPPED = object()
     [
         pytest.param(GARDEN, {"nav_pattern": NAV}, GARDEN_CLEAN, id="garden"),
         pytest.param(SPAM, {"nav_pattern": NAV}, DROPPED, id="spam"),
-        pytest.param(_lines(SEVEN, *[URL_LINE] * 3), {}, SEVEN, id="at-threshold"),
+        pytest.param(_lines(SEVEN, *[URL_LINE] * 3), {}, SEVEN + "\n", id="at-threshold"),
         pytest.param(_lines(SEVEN, *[URL_LINE] * 4), {}, DROPPED, id="over-threshold"),
         pytest.param(_lines(C1, C2, C3, C4, C5), {}, _lines(C1, C2, C3, C4, C5), id="clean-doc"),
         pytest.param("", {}, "", id="empty"),
         pytest.param("  \n ", {}, "  \n ", id="blank"),
         pytest.param(None, {}, None, id="none"),
-        pytest.param(f"{C1}\r\n{URL_LINE}\r\n{C2}", {}, f"{C1}\n{C2}", id="crlf"),
+        pytest.param(f"{C1}\r\n{URL_LINE}\r\n{C2}", {}, f"{C1}\r\n{C2}", id="crlf"),
+        pytest.param(_lines(C1, URL_LINE, C2) + "\n", {}, f"{C1}\n{C2}\n", id="trailing-newline"),
+        pytest.param(f"{C1}\x0c{URL_LINE}\n{C2}", {}, f"{C1}\x0c{C2}", id="form-feed"),
         pytest.param(_lines(C1, f"  {URL_LINE}  ", C2), {}, f"{C1}\n{C2}", id="url-padded"),
-        pytest.param(GARDEN, {}, _lines(NAV_LINE, C1, C2, "", C3, C4, C5), id="nav-off-default"),
+        pytest.param(GARDEN, {}, _lines(NAV_LINE, C1, C2, "", C3, C4, C5) + "\n", id="nav-off-default"),
         pytest.param(
             _lines(C1, C2, C3, "buy now buy now buy now buy now"),
             {"max_line_repetition_ratio": 0.5},
-            _lines(C1, C2, C3),
+            _lines(C1, C2, C3) + "\n",
             id="repetition",
         ),
         pytest.param(
@@ -135,6 +137,8 @@ def test_cleans_lines_and_gates_on_removed_word_ratio(text: object, config: dict
         pytest.param({"max_line_repetition_ratio": 1.5}, id="repetition-ratio-above-one"),
         pytest.param({"min_line_words": 0}, id="zero-min-words"),
         pytest.param({"nav_pattern": "("}, id="invalid-nav-regex"),
+        pytest.param({"boilerplate_strings": "javascript"}, id="boilerplate-bare-string"),
+        pytest.param({"boilerplate_strings": ("",)}, id="boilerplate-empty-entry"),
     ],
 )
 def test_rejects_bad_config(config: dict[str, Any]) -> None:
