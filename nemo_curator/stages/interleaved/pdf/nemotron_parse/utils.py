@@ -23,17 +23,24 @@ from __future__ import annotations
 
 import json
 import re
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-from nemo_curator.stages.interleaved.pdf.utils import (
+from PIL import Image  # noqa: TC002  # runtime import keeps typing.get_type_hints() working
+
+# DEFAULT_MAX_PAGES, render_pdf_pages and the extract_* / resolve_* helpers are
+# re-exported so imports from this module's pre-split path (v1.2, v1.3) keep working.
+from nemo_curator.stages.interleaved.pdf.utils import (  # noqa: F401
+    DEFAULT_MAX_PAGES,
     DEFAULT_MIN_CROP_PX,
     build_canvas,
     crop_to_bbox,
+    extract_pdf_from_jsonl,
+    extract_pdf_from_zip,
+    extract_pdfs_from_jsonl_batch,
     image_to_bytes,
+    render_pdf_pages,
+    resolve_cc_pdf_zip_path,
 )
-
-if TYPE_CHECKING:
-    from PIL import Image
 
 
 def parse_nemotron_output(raw_text: str) -> list[dict[str, Any]]:

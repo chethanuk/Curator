@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from pathlib import Path
 
+import pytest
 from PIL import Image
 
 from nemo_curator.stages.interleaved.pdf.utils import (
@@ -34,6 +35,7 @@ from nemo_curator.stages.interleaved.pdf.utils import (
     extract_pdf_from_zip,
     extract_pdfs_from_jsonl_batch,
     image_to_bytes,
+    render_pdf_pages,
     resolve_cc_pdf_zip_path,
 )
 
@@ -183,3 +185,44 @@ class TestExtractPdfsFromJsonlBatch:
         result = extract_pdfs_from_jsonl_batch(str(jsonl_file), offsets)
         assert result[0] == pdf_bytes
         assert result[99999] is None
+
+
+def _blank_pdf(num_pages: int, width_pt: float = 612, height_pt: float = 792) -> bytes:
+    pdfium = pytest.importorskip("pypdfium2")
+    pytest.importorskip("cv2")
+    doc = pdfium.PdfDocument.new()
+    for _ in range(num_pages):
+        doc.new_page(width_pt, height_pt)
+    buf = io.BytesIO()
+    doc.save(buf)
+    doc.close()
+    return buf.getvalue()
+
+
+class TestRenderPdfPages:
+    @pytest.mark.parametrize(
+        ("dpi", "max_pages", "max_size", "expected_pages", "expected_size"),
+        [
+            # Letter page at 300 dpi is 2550x3300; the default cap fits it into 1664x2048.
+            pytest.param(300, 50, (1664, 2048), 3, (1583, 2048), id="capped-by-max-size"),
+            pytest.param(72, 50, None, 3, (612, 792), id="uncapped-at-72-dpi"),
+            pytest.param(300, 2, (1664, 2048), 2, (1583, 2048), id="max-pages-limits-count"),
+        ],
+    )
+    def test_renders_rgb_pages_within_bounds(
+        self,
+        dpi: int,
+        max_pages: int,
+        max_size: tuple[int, int] | None,
+        expected_pages: int,
+        expected_size: tuple[int, int],
+    ) -> None:
+        pages = render_pdf_pages(_blank_pdf(3), dpi=dpi, max_pages=max_pages, max_size=max_size)
+        assert len(pages) == expected_pages
+        for page in pages:
+            assert page.mode == "RGB"
+            assert page.size == expected_size
+
+    def test_unreadable_pdf_returns_no_pages(self) -> None:
+        pytest.importorskip("pypdfium2")
+        assert render_pdf_pages(b"not a pdf") == []

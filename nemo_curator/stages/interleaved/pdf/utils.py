@@ -16,7 +16,7 @@
 
 Provides page rendering, image serialization, processor-canvas construction,
 bbox cropping, and PDF extraction from CC-MAIN zip archives and base64 JSONL.
-Nothing here is specific to a particular parsing model.
+Nothing here depends on a particular parsing model's output format.
 """
 
 from __future__ import annotations
@@ -155,7 +155,7 @@ def image_to_bytes(image: Image.Image, fmt: str = "PNG") -> bytes:
 
 
 def build_canvas(page_img: Image.Image, proc_size: tuple[int, int]) -> Image.Image:
-    """Replicate the model processor's resize-then-center-pad to build the canvas.
+    """Replicate a model processor's resize-then-center-pad to build the canvas.
 
     This lets us crop bboxes directly in the model's coordinate space.
     """
