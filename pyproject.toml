@@ -370,6 +370,7 @@ constraint-dependencies = [
     "transformers>=4.56.0,<5.0", # tranfomers>5 breaks with hf_hub<1.0 added in override
 ]
 override-dependencies = [
+    # The fsspec override also hides s3fs/gcsfs's exact fsspec pins; bump them together: `uv lock -P s3fs -P fsspec`
     "fsspec>=2025.3.0", # Overrides nemo-toolkit[asr]'s fsspec==2024.12.0 pin; data-designer-engine==0.9.1 requires >=2025.3.0
     "apex; sys_platform == 'never'",
     "distance; sys_platform == 'never'",
