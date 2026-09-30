@@ -26,16 +26,20 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
     ("relative_path", "excluded"),
     [
         ("docs/README.md", True),
-        ("tutorials/x.ipynb", True),
         ("fern/docs.yml", True),
-        ("eval/run.py", True),
         ("nemo_curator/__init__.py", False),
         ("nemo_curator/eval/__init__.py", False),
         ("tests/backends/test_utils.py", False),
         ("benchmarking/run.py", False),
+        # Files that tests/ and benchmarking/ import or read, so they must ship with them.
+        ("eval/video/caption_clipscore.py", False),  # tests/eval/video/test_caption_clipscore.py
+        ("tutorials/audio/nemo_fastconformer/pipeline.yaml", False),  # tests/config/test_run.py
+        ("tutorials/eval/llm_judge/cc_extract_example/pipeline.yaml", False),  # tests/eval/llm_judge
+        ("tutorials/video/getting-started/video_split_clip_example.py", False),  # video_pipeline_benchmark.py
+        ("tutorials/interleaved/nemotron_parse_pdf/pipeline_utils.py", False),  # nemotron_parse_pdf_benchmark.py
     ],
 )
-def test_ray_working_dir_upload_skips_only_docs_tutorials_fern_and_eval(relative_path: str, excluded: bool) -> None:
+def test_ray_working_dir_upload_skips_only_docs_and_fern(relative_path: str, excluded: bool) -> None:
     assert (REPO_ROOT / ".rayignore").is_file()
     excludes = get_excludes_from_ignore_files(REPO_ROOT, include_gitignore=True)
     assert any(match(REPO_ROOT / relative_path) for match in excludes) is excluded

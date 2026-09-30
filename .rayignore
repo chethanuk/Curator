@@ -1,7 +1,5 @@
 # Paths Ray skips when this repo root is uploaded as a runtime_env working_dir
-# (for example `ray job submit --working-dir .`). Leading "/" anchors to the repo root,
-# so the nemo_curator/eval package is still uploaded.
+# (for example `ray job submit --working-dir .`). Leading "/" anchors to the repo root.
+# eval/ and tutorials/ stay: tests/ and benchmarking/ import and read files from them.
 /docs/
-/eval/
 /fern/
-/tutorials/
