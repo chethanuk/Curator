@@ -84,6 +84,17 @@ DROPPED = object()
         pytest.param(_lines(C1, URL_LINE, C2) + "\n", {}, f"{C1}\n{C2}\n", id="trailing-newline"),
         pytest.param(f"{C1}\x0c{URL_LINE}\n{C2}", {}, f"{C1}\x0c{C2}", id="form-feed"),
         pytest.param(_lines(C1, f"  {URL_LINE}  ", C2), {}, f"{C1}\n{C2}", id="url-padded"),
+        pytest.param(f"The quick brown fox\u2028{C1}", {}, f"The quick brown fox\u2028{C1}", id="line-separator"),
+        pytest.param(f"The quick brown fox\x85{C1}", {}, f"The quick brown fox\x85{C1}", id="next-line"),
+        pytest.param(
+            _lines(C1, "https://example.com/a;b=1", C2), {"min_line_words": None}, f"{C1}\n{C2}", id="url-semicolon"
+        ),
+        pytest.param(
+            _lines(C1, "https://de.wikipedia.org/wiki/München", C2),
+            {"min_line_words": None},
+            f"{C1}\n{C2}",
+            id="url-non-ascii",
+        ),
         pytest.param(GARDEN, {}, _lines(NAV_LINE, C1, C2, "", C3, C4, C5) + "\n", id="nav-off-default"),
         pytest.param(
             _lines(C1, C2, C3, "buy now buy now buy now buy now"),

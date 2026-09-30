@@ -86,13 +86,13 @@ if __name__ == "__main__":
 
 Each non-blank line is removed by the first rule it fails:
 
-1. `url_only`: the stripped line is a single URL (`remove_url_only_lines=True`).
+1. `url_only`: the stripped line is a single `http://` or `https://` URL with no spaces (`remove_url_only_lines=True`).
 2. `nav_pattern`: the line matches the `nav_pattern` regex (off by default).
 3. `boilerplate`: the lowercased line contains one of `boilerplate_strings` (defaults to the policy strings used by `BoilerPlateStringFilter`).
 4. `repetition`: the repeated word ratio is above `max_line_repetition_ratio` (off by default).
 5. `min_words`: the line has fewer than `min_line_words` words (default 5).
 
-A removed line is dropped together with its line break, and kept lines are unchanged. A document is discarded when the ratio of removed words is above `max_removal_ratio` (default 0.3).
+Lines end at LF, CRLF, CR, or form feed. Other separators, such as U+2028, stay inside the line. A removed line is dropped together with its line break, and kept lines are unchanged. A document is discarded when the ratio of removed words is above `max_removal_ratio` (default 0.3).
 
 ```python
 from nemo_curator.stages.text.filters import LineLevelQualityFilter

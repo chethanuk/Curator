@@ -18,12 +18,16 @@ from dataclasses import dataclass
 from loguru import logger
 
 from nemo_curator.stages.base import ProcessingStage
-from nemo_curator.stages.text.utils.constants import policy_substrings, regex_url
+from nemo_curator.stages.text.utils.constants import policy_substrings
 from nemo_curator.stages.text.utils.text_utils import get_word_splitter
 from nemo_curator.tasks import DocumentBatch
 
 _RULES = ("url_only", "nav_pattern", "boilerplate", "repetition", "min_words")
 _METRIC_KEYS = (*(f"lines_removed_{rule}" for rule in _RULES), "words_removed", "words_total", "documents_discarded")
+# Only \n, \r\n, \r and \x0c end a line. str.splitlines also splits on U+2028, NEL and other
+# separators that crawled text carries inside sentences.
+_LINE = re.compile(r"[^\r\n\x0c]*(?:\r\n|[\r\n\x0c])|[^\r\n\x0c]+")
+_URL_ONLY = re.compile(r"https?://\S+")
 
 
 @dataclass
@@ -38,13 +42,15 @@ class LineLevelQualityFilter(ProcessingStage[DocumentBatch, DocumentBatch]):
     every call, so "ja" costs one tagger per line) and removed by the first rule it fails,
     checked in this order:
 
-    1. ``url_only``: the stripped line is a single URL (``remove_url_only_lines``).
+    1. ``url_only``: the stripped line is one ``http(s)://`` token with no whitespace
+       (``remove_url_only_lines``).
     2. ``nav_pattern``: the line matches ``nav_pattern`` (``re.search``).
     3. ``boilerplate``: the lowercased line contains one of ``boilerplate_strings``.
     4. ``repetition``: ``1 - unique_words / words > max_line_repetition_ratio``.
     5. ``min_words``: the line has fewer than ``min_line_words`` words.
 
-    Lines are split with ``str.splitlines``. Blank lines are kept and not counted. A removed line is
+    Lines end at LF, CRLF, CR or form feed; other separators such as U+2028 and NEL stay inside
+    the line. Blank lines are kept and not counted. A removed line is
     dropped together with its line break; every kept line, including its original line break, is
     left unchanged. The document is discarded when
     ``words_removed / words_total > max_removal_ratio``. Non-string values pass through untouched.
@@ -115,7 +121,7 @@ class LineLevelQualityFilter(ProcessingStage[DocumentBatch, DocumentBatch]):
         return ["data"], [self.text_field]
 
     def _failed_rule(self, line: str, words: list[str]) -> str | None:
-        if self.remove_url_only_lines and regex_url.fullmatch(line.strip()):
+        if self.remove_url_only_lines and _URL_ONLY.fullmatch(line.strip()):
             return "url_only"
         if self._nav_regex is not None and self._nav_regex.search(line):
             return "nav_pattern"
@@ -137,14 +143,14 @@ class LineLevelQualityFilter(ProcessingStage[DocumentBatch, DocumentBatch]):
         if not isinstance(text, str):
             return text, True
 
-        lines = text.splitlines(keepends=True)
+        lines = _LINE.findall(text)
         kept_lines = []
         total = removed = 0
         for line in lines:
             if not line.strip():
                 kept_lines.append(line)
                 continue
-            content = line.splitlines()[0]
+            content = line.rstrip("\r\n\x0c")
             words = self._split_words(content)
             total += len(words)
             rule = self._failed_rule(content, words)
