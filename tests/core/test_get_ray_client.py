@@ -15,6 +15,7 @@
 # ruff: noqa: ARG001
 
 import os
+import re
 import tempfile
 import time
 
@@ -75,7 +76,11 @@ def clean_env():
 
 def test_ray_client_default_temp_dir_is_user_scoped():
     """The default Ray temp dir must not be one path every user on a shared host writes to."""
-    assert RayClient().ray_temp_dir == f"/tmp/ray_{os.getuid()}"  # noqa: S108
+    default = RayClient().ray_temp_dir
+    assert str(os.getuid()) in default
+    # The SLURM docs and scripts use /tmp/ray_<SLURM_JOB_ID> per job. A uid-scoped default in that
+    # same /tmp/ray_<number> namespace collides with another user's job whose ID equals our uid.
+    assert not re.fullmatch(r"/tmp/ray_\d+", default)  # noqa: S108
 
 
 def test_get_ray_client_single_start(clean_env: pytest.fixture):

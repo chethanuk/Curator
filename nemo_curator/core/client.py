@@ -461,8 +461,18 @@ class SlurmRayClient(RayClient):
         per-user directory under ``/tmp`` (works on single-node or when /tmp is
         shared, e.g. via NFS).
         """
-        broadcast_dir = os.environ.get("RAY_PORT_BROADCAST_DIR", DEFAULT_RAY_PORT_BROADCAST_DIR)
-        os.makedirs(broadcast_dir, exist_ok=True)
+        broadcast_dir = os.environ.get("RAY_PORT_BROADCAST_DIR")
+        if broadcast_dir is None:
+            # The default path is predictable, so another local user could pre-create it and plant a
+            # fake port file. Create it private and refuse one we do not own.
+            broadcast_dir = DEFAULT_RAY_PORT_BROADCAST_DIR
+            os.makedirs(broadcast_dir, mode=0o700, exist_ok=True)
+            owner = os.stat(broadcast_dir).st_uid
+            if owner != os.getuid():
+                msg = f"{broadcast_dir} is owned by uid {owner}, not {os.getuid()}; set RAY_PORT_BROADCAST_DIR"
+                raise PermissionError(msg)
+        else:
+            os.makedirs(broadcast_dir, exist_ok=True)
         return os.path.join(broadcast_dir, f"ray_head_port_{slurm_job_id}")
 
     def _write_head_port(self, slurm_job_id: str) -> None:

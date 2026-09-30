@@ -17,8 +17,9 @@ import os
 DEFAULT_RAY_PORT = 6379
 DEFAULT_RAY_DASHBOARD_PORT = 8265
 # Scoped by UID so two users on one host get separate directories, rather than the second being
-# denied access to one the first already owns.
-DEFAULT_RAY_TEMP_DIR = f"/tmp/ray_{os.getuid()}"  # noqa: S108
+# denied access to one the first already owns. The "uid" prefix keeps it out of the /tmp/ray_<SLURM_JOB_ID>
+# namespace the SLURM scripts use, where a job ID equal to another user's uid would collide.
+DEFAULT_RAY_TEMP_DIR = f"/tmp/ray_uid{os.getuid()}"  # noqa: S108
 DEFAULT_RAY_METRICS_PORT = 8080
 DEFAULT_RAY_DASHBOARD_HOST = "127.0.0.1"
 DEFAULT_RAY_CLIENT_SERVER_PORT = 10001
