@@ -98,7 +98,9 @@ class LineLevelQualityFilter(ProcessingStage[DocumentBatch, DocumentBatch]):
         except re.error as e:
             msg = f"nav_pattern is not a valid regex: {self.nav_pattern!r}"
             raise ValueError(msg) from e
-        if isinstance(self.boilerplate_strings, str) or not all(self.boilerplate_strings):
+        if isinstance(self.boilerplate_strings, str) or not all(
+            isinstance(s, str) and s for s in self.boilerplate_strings
+        ):
             msg = f"boilerplate_strings must be a tuple of non-empty strings, got {self.boilerplate_strings!r}"
             raise ValueError(msg)
         self._boilerplate = tuple(s.lower() for s in self.boilerplate_strings)

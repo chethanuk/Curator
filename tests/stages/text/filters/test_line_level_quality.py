@@ -139,6 +139,7 @@ def test_cleans_lines_and_gates_on_removed_word_ratio(text: object, config: dict
         pytest.param({"nav_pattern": "("}, id="invalid-nav-regex"),
         pytest.param({"boilerplate_strings": "javascript"}, id="boilerplate-bare-string"),
         pytest.param({"boilerplate_strings": ("",)}, id="boilerplate-empty-entry"),
+        pytest.param({"boilerplate_strings": (1,)}, id="boilerplate-non-string-entry"),
     ],
 )
 def test_rejects_bad_config(config: dict[str, Any]) -> None:
