@@ -156,7 +156,7 @@ class TestInferenceServer:
         # Fails on the first poll rather than waiting out health_check_timeout_s.
         assert time.monotonic() - started < 2
 
-    def test_wait_for_healthy_polls_status_check_until_ready(self, httpserver: HTTPServer) -> None:
+    def test_wait_for_healthy_returns_when_status_check_passes(self, httpserver: HTTPServer) -> None:
         httpserver.expect_request("/v1/models").respond_with_json({"data": [{"id": "my-model"}]})
         checks: list[None] = []
         server = InferenceServer(
@@ -168,3 +168,23 @@ class TestInferenceServer:
         server._wait_for_healthy(status_check=lambda: checks.append(None))
 
         assert checks
+
+    def test_wait_for_healthy_aborts_when_app_fails_after_passing_status_checks(self) -> None:
+        # Mirrors the real failure: serve.run returns with the app RUNNING and it only
+        # turns UNHEALTHY a few polls later, while /v1/models never answers.
+        server = InferenceServer(models=[], port=19878, health_check_timeout_s=30)
+        calls = 0
+
+        def status_check() -> None:
+            nonlocal calls
+            calls += 1
+            if calls == 3:
+                msg = "Ray Serve application 'default' is UNHEALTHY: replicas failed to start"
+                raise RuntimeError(msg)
+
+        started = time.monotonic()
+        with pytest.raises(RuntimeError, match="replicas failed to start"):
+            server._wait_for_healthy(status_check=status_check)
+
+        assert calls == 3
+        assert time.monotonic() - started < 30

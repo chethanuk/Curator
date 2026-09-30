@@ -13,6 +13,8 @@
 # limitations under the License.
 
 import sys
+import threading
+import time
 from unittest import mock
 
 import pytest
@@ -141,9 +143,28 @@ class TestRayServeBackend:
             mock.patch("ray.serve.start"),
             mock.patch("ray.serve.run"),
             mock.patch("ray.serve.status", return_value=failed),
-            mock.patch.object(backend, "_cleanup_failed_deploy") as cleanup,
+            mock.patch("ray.serve.shutdown") as shutdown,
             pytest.raises(RuntimeError, match="is DEPLOY_FAILED: Failed to build app"),
         ):
             backend._deploy()
 
-        cleanup.assert_called_once()
+        # The failed deploy must not leave Serve running.
+        shutdown.assert_called_once()
+
+    def test_wait_for_healthy_times_out_when_serve_status_hangs(self) -> None:
+        server = InferenceServer(models=[], name="curator-app", port=19879, health_check_timeout_s=2)
+        backend = RayServeBackend(server)
+        release = threading.Event()
+
+        started = time.monotonic()
+        try:
+            # serve.status() blocks on the controller with no timeout of its own.
+            with (
+                mock.patch("ray.serve.status", side_effect=lambda: release.wait(20)),
+                pytest.raises(TimeoutError, match="did not become ready within 2s"),
+            ):
+                server._wait_for_healthy(status_check=backend._raise_if_app_failed)
+        finally:
+            release.set()
+
+        assert time.monotonic() - started < 10

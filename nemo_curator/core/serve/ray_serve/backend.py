@@ -13,6 +13,8 @@
 # limitations under the License.
 
 import os
+import threading
+from concurrent.futures import Future
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
@@ -25,6 +27,10 @@ if TYPE_CHECKING:
     from ray.serve.llm import LLMConfig
 
     from nemo_curator.core.serve.server import InferenceServer
+
+# serve.status() waits on the controller with no timeout of its own; cap each poll's
+# status check like the /v1/models request (urlopen timeout=5).
+_SERVE_STATUS_TIMEOUT_S = 5
 
 
 class RayServeBackend(InferenceBackend):
@@ -102,10 +108,21 @@ class RayServeBackend(InferenceBackend):
         from ray import serve
         from ray.serve.schema import ApplicationStatus, DeploymentStatus, DeploymentStatusTrigger
 
+        status: Future = Future()
+
+        def fetch_status() -> None:
+            try:
+                status.set_result(serve.status())
+            except Exception as e:  # noqa: BLE001
+                status.set_exception(e)
+
+        # ponytail: a hung controller leaves one parked daemon thread per poll (at most
+        # health_check_timeout_s / 6); reuse a single in-flight call if that ever matters.
+        threading.Thread(target=fetch_status, daemon=True).start()
         try:
-            app_status = serve.status().applications.get(self._server.name)
+            app_status = status.result(timeout=_SERVE_STATUS_TIMEOUT_S).applications.get(self._server.name)
         except Exception:  # noqa: BLE001
-            # A controller hiccup mid-load is not a deploy failure; keep polling.
+            # A controller hiccup or stall mid-load is not a deploy failure; keep polling.
             logger.debug("serve.status() failed while waiting for the application", exc_info=True)
             return
         if app_status is None:
