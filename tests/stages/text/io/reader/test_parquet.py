@@ -12,10 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import collections
+import http.server
+import sys
 import threading
 import time
 import zipfile
 from pathlib import Path
+from typing import ClassVar
 
 import fsspec
 import pandas as pd
@@ -214,7 +218,7 @@ def test_parquet_reader_stage_empty_file_uses_base_reader_policy(tmp_path: Path)
 
 
 def _per_file_reference(paths: list[str], **read_kwargs: object) -> pd.DataFrame:
-    """What the stage returned before group reads: one pd.read_parquet per file, then concat."""
+    """One pd.read_parquet per file, then concat: the result a group read must reproduce."""
     kwargs = {"engine": "pyarrow", "dtype_backend": "pyarrow", **read_kwargs}
     return pd.concat((pd.read_parquet(path, **kwargs) for path in paths), ignore_index=True)
 
@@ -234,6 +238,11 @@ _EQUIVALENCE_CASES = {
             pd.DataFrame({"a": [1]}, index=pd.Index([10], name="i1")),
             pd.DataFrame({"a": [2]}, index=pd.Index([20], name="i2")),
         ],
+        None,
+        {},
+    ),
+    "columns_name_in_first_file_only": (
+        [pd.DataFrame({"a": [1]}).rename_axis(columns="cn"), pd.DataFrame({"a": [2]})],
         None,
         {},
     ),
@@ -319,17 +328,82 @@ def test_parquet_reader_stage_reads_directory_path(tmp_path: Path):
     pd.testing.assert_frame_equal(out.to_pandas(), _per_file_reference(paths))
 
 
-def test_parquet_reader_stage_fields_fill_nulls_for_files_missing_the_column(tmp_path: Path):
-    # Per-file reads raised on the first file lacking a requested column; a group read returns nulls for it,
-    # as it already does for every column when fields is None.
-    paths = [str(tmp_path / "a.parquet"), str(tmp_path / "ab.parquet")]
-    pd.DataFrame({"a": [1]}).to_parquet(paths[0], index=False)
-    pd.DataFrame({"a": [2], "b": ["x"]}).to_parquet(paths[1], index=False)
+_PARTLY_MISSING_COLUMN_GROUPS = {
+    # case id: files in the group, each {"a": ...} or {"a": ..., "b": ...}
+    "single_file": [{"a": [1]}],
+    "group_read_in_one_scan": [{"a": [1]}, {"a": [2], "b": ["x"]}],
+    # "a" is int in one file and string in the other, so this group is read file by file.
+    "group_read_per_file": [{"a": [1]}, {"a": ["s"], "b": ["y"]}],
+}
 
-    df = ParquetReaderStage(fields=["b"]).process(_make_file_group_task(paths)).to_pandas()
 
-    assert df["b"].isna().tolist() == [True, False]
-    assert df["b"].iloc[1] == "x"
+@pytest.mark.parametrize("files", _PARTLY_MISSING_COLUMN_GROUPS.values(), ids=_PARTLY_MISSING_COLUMN_GROUPS.keys())
+@pytest.mark.parametrize(
+    "stage_kwargs", [{"fields": ["b"]}, {"read_kwargs": {"columns": ["b"]}}], ids=["fields", "read_kwargs_columns"]
+)
+def test_parquet_reader_stage_raises_when_a_file_lacks_a_requested_column(
+    tmp_path: Path, files: list[dict], stage_kwargs: dict
+):
+    paths = []
+    for i, columns in enumerate(files):
+        paths.append(str(tmp_path / f"{i}.parquet"))
+        pd.DataFrame(columns).to_parquet(paths[-1], index=False)
+
+    with pytest.raises(pa.lib.ArrowInvalid):
+        ParquetReaderStage(**stage_kwargs).process(_make_file_group_task(paths))
+
+
+class _DenyAllS3Handler(http.server.BaseHTTPRequestHandler):
+    def do_HEAD(self) -> None:
+        self.send_response(403)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    do_GET = do_HEAD  # noqa: N815
+
+    def log_message(self, *_args: object) -> None:
+        pass
+
+
+def test_parquet_reader_stage_reads_s3_url_without_s3fs(monkeypatch: pytest.MonkeyPatch):
+    # s3fs is an optional dependency; without it pd.read_parquet still reads s3:// through pyarrow's native S3.
+    monkeypatch.setitem(sys.modules, "s3fs", None)
+    for name, value in [
+        ("AWS_EC2_METADATA_DISABLED", "true"),
+        ("AWS_ACCESS_KEY_ID", "k"),
+        ("AWS_SECRET_ACCESS_KEY", "s"),
+    ]:
+        monkeypatch.setenv(name, value)
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _DenyAllS3Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    url = f"s3://bucket/a.parquet?endpoint_override=127.0.0.1:{server.server_port}&scheme=http&region=us-east-1"
+    try:
+        # The request reaches the S3 endpoint, which denies it.
+        with pytest.raises(OSError, match="ACCESS_DENIED"):
+            ParquetReaderStage().read_data([url])
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+class _OpenCountingMemoryFileSystem(MemoryFileSystem):
+    protocol = ("countmem",)
+    opens: ClassVar[collections.Counter] = collections.Counter()
+
+    def _open(self, path: str, mode: str = "rb", **kwargs: object) -> object:
+        type(self).opens[path] += 1
+        return super()._open(path, mode=mode, **kwargs)
+
+
+def test_parquet_reader_stage_fetches_each_footer_once_when_a_file_fails():
+    fsspec.register_implementation("countmem", _OpenCountingMemoryFileSystem, clobber=True)
+    pd.DataFrame({"a": [1]}).to_parquet("countmem://footers/a.parquet", index=False)
+    _OpenCountingMemoryFileSystem.opens = collections.Counter()
+
+    with pytest.raises(FileNotFoundError):
+        ParquetReaderStage().read_data(["countmem://footers/a.parquet", "countmem://footers/missing.parquet"])
+
+    assert sum(n for path, n in _OpenCountingMemoryFileSystem.opens.items() if path.endswith("/a.parquet")) == 1
 
 
 def test_parquet_reader_stage_pyarrow_errors_when_some_columns_missing(tmp_path: Path):

@@ -35,11 +35,16 @@ from .base import BaseFileReader
 _SINGLE_SCAN_KWARGS = frozenset({"engine", "dtype_backend", "columns", "storage_options"})
 
 
-def _read_single_scan(
+def _read_single_scan(  # noqa: PLR0911 - one return per case that falls back to per-file reads
     paths: list[str], columns: list[str] | None, storage_options: dict[str, Any] | None
 ) -> pd.DataFrame | None:
     """Read a file group in one pyarrow dataset scan. Returns None when one scan cannot reproduce per-file reads."""
-    resolved = [url_to_fs(path, **(storage_options or {})) for path in paths]
+    try:
+        resolved = [url_to_fs(path, **(storage_options or {})) for path in paths]
+    except (ImportError, ValueError):
+        # No fsspec backend for the protocol (e.g. s3fs is not installed); pd.read_parquet can still read an
+        # s3:// or gs:// URL through pyarrow's native filesystem.
+        return None
     fs = resolved[0][0]
     if any(other != fs for other, _ in resolved):
         return None  # e.g. a local path next to an s3:// one, or zip:// paths in different archives
@@ -52,10 +57,16 @@ def _read_single_scan(
         with ThreadPoolExecutor() as pool:
             schemas = list(pool.map(lambda path: pq.read_schema(path, filesystem=pa_fs), paths))
     except OSError:
-        return None  # e.g. a directory path, which pd.read_parquet reads as a dataset
+        if any(fs.isdir(path) for path in paths):
+            return None  # pd.read_parquet reads a directory path as a dataset
+        raise
+    # Per-file reads raise ArrowInvalid for a requested column that any file lacks.
+    if columns is not None and any(name not in schema.names for schema in schemas for name in columns):
+        return None
     # to_pandas applies the first file's pandas metadata to the whole table, so a physical index column
-    # stored by only some files would come back as a data column; per-file reads drop every index.
-    if len({_physical_index_columns(schema) for schema in schemas}) > 1:
+    # stored by only some files would come back as a data column (per-file reads drop every index), and
+    # a columns name stored by only some files would name the result's columns (pd.concat drops it).
+    if len({_pandas_layout(schema) for schema in schemas}) > 1:
         return None
     try:
         schema = pa.unify_schemas(schemas)
@@ -70,10 +81,13 @@ def _read_single_scan(
     return table.to_pandas(types_mapper=pd.ArrowDtype).reset_index(drop=True)
 
 
-def _physical_index_columns(schema: pa.Schema) -> tuple[str, ...]:
-    """Index columns a file stores as data; a RangeIndex is stored in the metadata only."""
-    index_columns = (schema.pandas_metadata or {}).get("index_columns", [])
-    return tuple(column for column in index_columns if isinstance(column, str))
+def _pandas_layout(schema: pa.Schema) -> tuple[tuple[str, ...], tuple[str | None, ...]]:
+    """Index columns a file stores as data (a RangeIndex is stored in the metadata only) and its columns names."""
+    metadata = schema.pandas_metadata or {}
+    index_columns = tuple(column for column in metadata.get("index_columns", []) if isinstance(column, str))
+    column_names = tuple(level.get("name") for level in metadata.get("column_indexes", []))
+    # A file without pandas metadata and one with unnamed columns convert the same way.
+    return index_columns, column_names if any(name is not None for name in column_names) else ()
 
 
 @dataclass
