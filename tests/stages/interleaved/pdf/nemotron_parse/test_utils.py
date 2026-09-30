@@ -16,13 +16,36 @@
 
 from __future__ import annotations
 
+import pytest
 from PIL import Image
 
+from nemo_curator.stages.interleaved.pdf import utils as pdf_utils
+from nemo_curator.stages.interleaved.pdf.nemotron_parse import utils as nemotron_parse_utils
 from nemo_curator.stages.interleaved.pdf.nemotron_parse.utils import (
     build_interleaved_rows,
     interleave_floaters,
     parse_nemotron_output,
 )
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "DEFAULT_MAX_PAGES",
+        "DEFAULT_MIN_CROP_PX",
+        "build_canvas",
+        "crop_to_bbox",
+        "extract_pdf_from_jsonl",
+        "extract_pdf_from_zip",
+        "extract_pdfs_from_jsonl_batch",
+        "image_to_bytes",
+        "render_pdf_pages",
+        "resolve_cc_pdf_zip_path",
+    ],
+)
+def test_pre_split_import_path_still_exposes_moved_helpers(name: str):
+    # These names lived in nemotron_parse.utils before the split; downstream code may still import them from there.
+    assert getattr(nemotron_parse_utils, name) is getattr(pdf_utils, name)
 
 
 class TestParseNemotronOutput:

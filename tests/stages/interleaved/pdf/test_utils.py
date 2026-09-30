@@ -19,6 +19,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import sys
 import zipfile
 from typing import TYPE_CHECKING
 
@@ -50,6 +51,12 @@ class TestBuildCanvas:
         img = Image.new("RGB", (50, 50), color="blue")
         canvas = build_canvas(img, (100, 100))
         assert canvas.size == (100, 100)
+
+    def test_missing_cv2_error_names_cropping(self, monkeypatch: pytest.MonkeyPatch):
+        # build_canvas runs in the postprocess crop path, so the hint must not say rendering only.
+        monkeypatch.setitem(sys.modules, "cv2", None)
+        with pytest.raises(ImportError, match="cropping"):
+            build_canvas(Image.new("RGB", (10, 10)), (20, 20))
 
 
 class TestCropToBbox:

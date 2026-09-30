@@ -33,9 +33,7 @@ from PIL import Image
 
 DEFAULT_MIN_CROP_PX = 10
 DEFAULT_MAX_PAGES = 50
-_CV2_INSTALL_HINT = (
-    "opencv-python-headless is required for PDF page rendering. Install with: pip install nemo_curator[cv2]"
-)
+_CV2_INSTALL_HINT = "opencv-python-headless is required for PDF page rendering and cropping. Install with: pip install nemo_curator[cv2]"
 
 
 def _render_scale_to_fit(page: Any, base_scale: float, max_wh: tuple[int, int] | None) -> float:  # noqa: ANN401
