@@ -29,6 +29,7 @@ from nemo_curator.stages.deduplication.id_generator import (
     kill_id_generator_actor,
 )
 from nemo_curator.stages.text.io.reader.jsonl import JsonlReader
+from nemo_curator.stages.text.io.reader.parquet import ParquetReader
 from nemo_curator.tasks import DocumentBatch
 from tests.stages.text.io.utils import normalize_string_dtypes
 
@@ -38,6 +39,11 @@ FILE_FORMAT_CONFIGS = {
         "extension": ".jsonl",
         "reader_class": JsonlReader,
         "writer_func": "_write_jsonl_file",
+    },
+    "parquet": {
+        "extension": ".parquet",
+        "reader_class": ParquetReader,
+        "writer_func": "_write_parquet_file",
     },
 }
 
@@ -56,7 +62,7 @@ def _write_parquet_file(file_path: Path, file_data: list[dict[str, Any]]) -> Non
 
 def create_test_files(
     input_dir: Path,
-    file_format: Literal["jsonl"] = "jsonl",  # Can extend to include "parquet" in future
+    file_format: Literal["jsonl", "parquet"] = "jsonl",
     num_files: int = 100,
     records_per_file: int = 2,
 ) -> pd.DataFrame:
@@ -101,7 +107,7 @@ def create_test_files(
 
 def create_reader_pipeline(
     input_dir: Path,
-    file_format: Literal["jsonl"] = "jsonl",  # Can extend to include "parquet" in future
+    file_format: Literal["jsonl", "parquet"] = "jsonl",
     generate_ids: bool = False,
     assign_ids: bool = False,
 ) -> Pipeline:
@@ -228,7 +234,7 @@ class TestReaderIntegrationWithoutIdGenerator:
             id="ray_data_jsonl",
         ),
         pytest.param(((XennaExecutor, {"execution_mode": "streaming"}), "jsonl"), id="xenna_streaming_jsonl"),
-        # Future formats can be added here:
+        pytest.param(((RayDataExecutor, {}), "parquet"), id="ray_data_parquet"),
     ],
     indirect=True,
 )
