@@ -294,7 +294,6 @@ class TestJsonlReaderWithIdGenerator:
     ) -> None:
         """Test sequential ID generation across multiple batches."""
         generation_stage = JsonlReaderStage(read_kwargs={"engine": engine}, _generate_ids=True)
-        generation_stage.setup()
 
         all_ids = []
         for task in file_group_tasks:
@@ -322,7 +321,6 @@ class TestJsonlReaderWithIdGenerator:
         """ If we now create a new stage with _assign_ids=True, the IDs should be the same as the previous batch."""
         all_ids = []
         assign_stage = JsonlReaderStage(read_kwargs={"engine": engine}, _assign_ids=True)
-        assign_stage.setup()
         for i, task in enumerate(file_group_tasks):
             result = assign_stage.process(task)
             assert isinstance(result.data, backing_type)
@@ -344,24 +342,20 @@ class TestJsonlReaderWithIdGenerator:
             lines=True,
         )
         stage = JsonlReaderStage(_generate_ids=id_mode == "generate", _assign_ids=id_mode == "assign")
-        stage.setup()
 
         result = stage.process(FileGroupTask(dataset_name="ds", data=[str(file_path)], _metadata={}))
 
         assert isinstance(result.data, pa.Table)
         assert result.data[CURATOR_DEDUP_ID_STR].to_pylist() == [101, 202]
 
-    def test_generate_ids_no_actor_error(self) -> None:
-        """Test error when actor doesn't exist and ID generation is requested."""
-        stage = JsonlReaderStage(_generate_ids=True)
+    @pytest.mark.parametrize("id_kwargs", [{"_generate_ids": True}, {"_assign_ids": True}])
+    def test_generate_ids_no_actor_error(self, id_kwargs: dict[str, bool]) -> None:
+        """A missing id_generator actor fails before any file is opened."""
+        stage = JsonlReaderStage(**id_kwargs)
+        task = FileGroupTask(dataset_name="ds", data=["/nonexistent.jsonl"], _metadata={})
 
         with pytest.raises(RuntimeError, match="actor 'id_generator' does not exist"):
-            stage.setup()
-
-        stage = JsonlReaderStage(_assign_ids=True)
-
-        with pytest.raises(RuntimeError, match="actor 'id_generator' does not exist"):
-            stage.setup()
+            stage.process(task)
 
 
 def test_jsonl_reader_with_blocksize_limit(tmp_path: Path, caplog: pytest.LogCaptureFixture):

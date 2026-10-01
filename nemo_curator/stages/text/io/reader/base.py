@@ -15,16 +15,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, TypeAlias
+from typing import Any, TypeAlias
 
 import numpy as np
 import pandas as pd
 import pyarrow as pa
 import ray
 from loguru import logger
-
-if TYPE_CHECKING:
-    from nemo_curator.backends.base import WorkerMetadata
 
 from nemo_curator.backends.utils import RayStageSpecKeys
 from nemo_curator.stages.base import ProcessingStage
@@ -71,20 +68,22 @@ class BaseReader(ProcessingStage[ReaderTask, DocumentBatch]):
             output_fields.append(CURATOR_DEDUP_ID_STR)
         return ["data"], output_fields
 
-    def setup(self, _: WorkerMetadata | None = None) -> None:
-        if self._generate_ids or self._assign_ids:
-            from nemo_curator.stages.deduplication.id_generator import get_id_generator_actor
+    def _resolve_id_generator(self) -> None:
+        # Resolved per batch, not in setup(): overriding setup() would make Ray Data run the reader as an actor.
+        from nemo_curator.stages.deduplication.id_generator import get_id_generator_actor
 
-            try:
-                self.id_generator = get_id_generator_actor()
-            except ValueError:
-                msg = (
-                    "ID generator is required when self._generate_ids or self._assign_ids is True, "
-                    "and the actor 'id_generator' does not exist. Please start the id_generator actor."
-                )
-                raise RuntimeError(msg) from None
+        try:
+            self.id_generator = get_id_generator_actor()
+        except ValueError:
+            msg = (
+                "ID generator is required when self._generate_ids or self._assign_ids is True, "
+                "and the actor 'id_generator' does not exist. Please start the id_generator actor."
+            )
+            raise RuntimeError(msg) from None
 
     def process(self, task: ReaderTask) -> DocumentBatch:
+        if self._generate_ids or self._assign_ids:
+            self._resolve_id_generator()
         output = self.read_task(task, dict(self.read_kwargs or {}), self.fields)
         self._validate_result(task, output.data)
         return self._document_batch(task, output)
@@ -162,7 +161,7 @@ class BaseReader(ProcessingStage[ReaderTask, DocumentBatch]):
             logger.warning(f"Column {CURATOR_DEDUP_ID_STR} already exists in {batch_key}, not generating new IDs")
 
     def ray_stage_spec(self) -> dict[str, Any]:
-        return {RayStageSpecKeys.IS_ACTOR_STAGE: self._generate_ids or self._assign_ids}
+        return {RayStageSpecKeys.IS_ACTOR_STAGE: False}
 
 
 @dataclass

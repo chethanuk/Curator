@@ -146,11 +146,9 @@ def test_lance_reader_generates_and_assigns_arrow_ids(tmp_path: Path) -> None:
 
     generation_stage = LanceReaderStage(fields=["text"], include_lance_metadata=False, _generate_ids=True)
     assert CURATOR_DEDUP_ID_STR in generation_stage.outputs()[1]
-    generation_stage.setup()
     generated = generation_stage.process(task)
 
     assignment_stage = LanceReaderStage(fields=["text"], include_lance_metadata=False, _assign_ids=True)
-    assignment_stage.setup()
     assigned = assignment_stage.process(task)
 
     assert isinstance(generated.data, pa.Table)

@@ -16,8 +16,11 @@ import pandas as pd
 
 
 def normalize_string_dtypes(dataframe: pd.DataFrame) -> pd.DataFrame:
-    """Materialize pandas string extension columns for content comparisons."""
-    string_columns = {
-        column: object for column, dtype in dataframe.dtypes.items() if isinstance(dtype, pd.StringDtype)
-    }
-    return dataframe.astype(string_columns)
+    """Materialize pandas extension columns (string or pyarrow-backed) as NumPy/object for content comparisons."""
+    columns = {}
+    for column, dtype in dataframe.dtypes.items():
+        if isinstance(dtype, pd.StringDtype) or (isinstance(dtype, pd.ArrowDtype) and dtype.kind == "O"):
+            columns[column] = object
+        elif isinstance(dtype, pd.ArrowDtype):
+            columns[column] = dtype.numpy_dtype
+    return dataframe.astype(columns)
