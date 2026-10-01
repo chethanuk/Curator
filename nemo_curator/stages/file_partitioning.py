@@ -53,7 +53,8 @@ class FilePartitioningStage(ProcessingStage[EmptyTask, FileGroupTask]):
     storage_options: dict[str, Any] | None = None
         Storage options to pass to the file system.
     limit: int | None = None
-        Maximum number of partitions to create.
+        Maximum number of partitions (file groups) to create; this caps file groups, not files.
+        Remaining file groups are dropped, and a warning reports how many.
     include_file_size: bool = False
         Include each partition's total file size as ``task_weight`` metadata.
     """
@@ -169,7 +170,10 @@ class FilePartitioningStage(ProcessingStage[EmptyTask, FileGroupTask]):
             if self.limit is not None and len(tasks) >= self.limit:
                 # We should revisit this behavior.
                 # https://github.com/NVIDIA-NeMo/Curator/issues/948
-                logger.info(f"Reached limit of {self.limit} file groups")
+                logger.warning(
+                    f"Reached limit of {self.limit} file groups; "
+                    f"dropping {len(partitions) - len(tasks)} of {len(partitions)} file groups"
+                )
                 break
             partition_sizes = [path_to_size[path] for path in file_group]
             task_weight = (
