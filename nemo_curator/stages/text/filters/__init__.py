@@ -13,11 +13,13 @@
 # limitations under the License.
 
 from .doc_filter import DocumentFilter
+from .line_level_quality import LineLevelQualityFilter
 from .score_filter import Filter, Score, ScoreFilter
 
 __all__ = [
     "DocumentFilter",
     "Filter",
+    "LineLevelQualityFilter",
     "Score",
     "ScoreFilter",
 ]
