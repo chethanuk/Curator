@@ -59,7 +59,7 @@ The head/worker split is determined automatically from `SLURM_NODEID`. Workers s
 | --- | --- | --- |
 | `SLURM_NODEID` | Yes (set by SLURM) | Identifies the head node (`SLURM_NODEID=0`) vs workers. |
 | `RAY_PORT_BROADCAST_DIR` | Recommended | Directory used to broadcast the head GCS port to workers. **Must be on a shared filesystem when `/tmp` is node-local.** Defaults to `${CURATOR_DIR}/logs` in the bundled submit scripts. |
-| `RAY_TMPDIR` | Optional | Per-job Ray temp directory. The bundled scripts set this to `/tmp/ray_${SLURM_JOB_ID}` to isolate concurrent jobs on the same node. |
+| `RAY_TMPDIR` | Optional | Ray CLI temp directory. The bundled scripts set this to `/tmp/ray_${SLURM_JOB_ID}`, but `SlurmRayClient` does not read it: the cluster it starts uses `ray_temp_dir`, which defaults to `/tmp/ray_uid<uid>`. |
 
 ---
 
@@ -220,7 +220,7 @@ The first line of each node's log identifies its role:
 | Workers hang at `ray start --block` indefinitely | Head node's port broadcast file isn't visible from worker nodes | Confirm `RAY_PORT_BROADCAST_DIR` points to a shared filesystem visible from every worker. |
 | Head node crashes with `Permission denied` writing the port file | Job UID can't write to the configured directory | Pick a `RAY_PORT_BROADCAST_DIR` your job's UID can write to (the default `${CURATOR_DIR}/logs` works once the directory exists). |
 | Pipeline runs on only one node | `--nodes=1` or the script wasn't `srun`-launched on every node | Confirm your job has `--nodes>1` and that `srun` is launched on every node. |
-| `ray start --head` crashes with port conflict | Concurrent Ray jobs on the same node share `/tmp/ray` | Set `RAY_TMPDIR=/tmp/ray_${SLURM_JOB_ID}` per job (the bundled scripts already do this). |
+| `ray start --head` crashes with port conflict | Concurrent jobs by the same user on one node share the default `/tmp/ray_uid<uid>` | Pass `SlurmRayClient(ray_temp_dir=f"/tmp/ray_{os.environ['SLURM_JOB_ID']}")` per job. `RAY_TMPDIR` does not change it. |
 | Container image pull fails on Pyxis | Pyxis can't reach NGC | Configure `~/.config/enroot/.credentials` with NGC API key, or pre-pull the image with `enroot import`. |
 
 ## Performance Considerations

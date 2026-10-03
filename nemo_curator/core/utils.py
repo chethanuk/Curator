@@ -144,7 +144,7 @@ def init_cluster(  # noqa: PLR0913
     num_gpus: int | None = None,
     num_cpus: int | None = None,
     object_store_memory: int | None = None,
-    enable_object_spilling: bool = False,
+    enable_object_spilling: bool = False,  # noqa: ARG001  # no-op: Ray spills under --temp-dir by default
     block: bool = True,
     ip_address: str | None = None,
     stdouterr_capture_file: str | None = None,
@@ -169,13 +169,6 @@ def init_cluster(  # noqa: PLR0913
     if object_store_memory is not None:
         ray_command.extend(["--object-store-memory", str(object_store_memory)])
     ray_command.extend(["--disable-usage-stats"])
-    if enable_object_spilling:
-        ray_command.extend(
-            [
-                "--system-config",
-                '{"local_fs_capacity_threshold": 0.95, "object_spilling_config": "{ "type": "filesystem", "params": {"directory_path": "/tmp/ray_spill", "buffer_size": 1000000 } }"}',
-            ]
-        )
     if num_gpus:
         ray_command.extend(["--num-gpus", str(num_gpus)])
     if num_cpus:

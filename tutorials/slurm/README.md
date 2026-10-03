@@ -426,9 +426,8 @@ SlurmRayClient(
     # Ray GCS port — defaults to a random free port
     ray_port=6379,
 
-    # Shared directory for Ray temp files (logs, sockets)
-    # Must be visible to all nodes
-    ray_temp_dir="/tmp/ray",
+    # Directory for Ray temp files (logs, sockets); defaults to /tmp/ray_uid<uid>
+    ray_temp_dir=f"/tmp/ray_{os.environ['SLURM_JOB_ID']}",
 
     # Resource overrides (auto-detected from SLURM env vars if not set)
     num_gpus=8,   # GPUs per node
@@ -443,8 +442,8 @@ SlurmRayClient(
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `RAY_PORT_BROADCAST_DIR` | `/tmp` | Directory for the port-broadcast file. **Set to a shared filesystem path when `/tmp` is not shared across nodes.** |
-| `RAY_TMPDIR` | `/tmp/ray` | Ray temp directory. Recommend setting to `/tmp/ray_${SLURM_JOB_ID}` to avoid cross-job collisions. |
+| `RAY_PORT_BROADCAST_DIR` | `/tmp/ray_port_broadcast_<uid>` | Directory for the port-broadcast file. **Set to a shared filesystem path when `/tmp` is not shared across nodes.** |
+| `RAY_TMPDIR` | `/tmp/ray` | Ray CLI temp directory (Curator's `ray_temp_dir` defaults to `/tmp/ray_uid<uid>` and does not read this). To isolate concurrent jobs on one node, pass `SlurmRayClient(ray_temp_dir=...)` per job, as in the example above. |
 | `SLURM_JOB_ID` | set by SLURM | Used to name the port-broadcast file. Set manually if testing outside SLURM. |
 
 > **Important**: If your cluster's `/tmp` is local to each node (the common case), set `RAY_PORT_BROADCAST_DIR` to a Lustre/NFS path so all nodes can read the port file:

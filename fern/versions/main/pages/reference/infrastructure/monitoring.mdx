@@ -112,7 +112,7 @@ export NEMO_CURATOR_RAY_DATA_DIAGNOSTICS=1
 ```
 
 The diagnostics write state-change events to `ray-data.log` in the Ray session log directory:
-`<ray_temp_dir>/session_latest/logs/ray-data/ray-data.log`. The default `ray_temp_dir` for `RayClient` is `/tmp/ray`.
+`<ray_temp_dir>/session_latest/logs/ray-data/ray-data.log`. The default `ray_temp_dir` for `RayClient` is `/tmp/ray_uid<uid>`.
 Set `RayClient(ray_temp_dir=...)` or `SlurmRayClient(ray_temp_dir=...)` when you need a shared or persistent location.
 This setting applies when Curator starts the Ray cluster. For an existing cluster, use the temporary directory configured when that cluster started.
 

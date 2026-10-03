@@ -211,6 +211,28 @@ class TestHeadPortFile:
         client = SlurmRayClient()
         path = client._head_port_file("42")
         assert os.path.basename(path) == "ray_head_port_42"
+        # Scoped by UID so a second user on the same node is not blocked by the first user's file.
+        assert os.path.dirname(path) == f"/tmp/ray_port_broadcast_{os.getuid()}"  # noqa: S108
+
+    def test_default_dir_is_private_to_the_user(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        broadcast_dir = tmp_path / "broadcast"
+        monkeypatch.delenv("RAY_PORT_BROADCAST_DIR", raising=False)
+        monkeypatch.setattr("nemo_curator.core.client.DEFAULT_RAY_PORT_BROADCAST_DIR", str(broadcast_dir))
+        SlurmRayClient()._head_port_file("42")
+        assert broadcast_dir.stat().st_mode & 0o777 == 0o700
+
+    def test_default_dir_owned_by_another_user_is_rejected(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Another local user pre-created the predictable default dir to plant a fake port file.
+        broadcast_dir = tmp_path / "broadcast"
+        broadcast_dir.mkdir()
+        monkeypatch.delenv("RAY_PORT_BROADCAST_DIR", raising=False)
+        monkeypatch.setattr("nemo_curator.core.client.DEFAULT_RAY_PORT_BROADCAST_DIR", str(broadcast_dir))
+        client = SlurmRayClient()
+        monkeypatch.setattr(os, "getuid", lambda: broadcast_dir.stat().st_uid + 1)
+        with pytest.raises(PermissionError, match="owned by uid"):
+            client._head_port_file("42")
 
     def test_custom_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("RAY_PORT_BROADCAST_DIR", str(tmp_path))

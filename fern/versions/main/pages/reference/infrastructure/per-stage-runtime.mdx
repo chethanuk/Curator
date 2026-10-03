@@ -16,7 +16,7 @@ Run pipeline stages with different Python package versions in the same pipeline.
 
 Some curation pipelines require stages that depend on different versions of the same library. For example, one stage might need `transformers==4.40.0` for a specific model checkpoint, while another stage needs `transformers==4.45.0` for a newer model. Without isolation, these stages cannot coexist in the same pipeline.
 
-Per-stage runtime environments solve this by using Ray's native `runtime_env` support. When a stage declares a `runtime_env`, Ray creates and caches an isolated virtualenv under `/tmp/ray/session_latest/runtime_resources/pip/<hash>/virtualenv`. Each unique dependency set gets its own cached virtualenv, reused for the lifetime of the Ray session. No driver-side virtualenv creation or `PYTHONPATH` manipulation is needed.
+Per-stage runtime environments solve this by using Ray's native `runtime_env` support. When a stage declares a `runtime_env`, Ray creates and caches an isolated virtualenv under `<ray_temp_dir>/session_latest/runtime_resources/pip/<hash>/virtualenv`. Each unique dependency set gets its own cached virtualenv, reused for the lifetime of the Ray session. No driver-side virtualenv creation or `PYTHONPATH` manipulation is needed.
 
 ## Usage
 
@@ -158,5 +158,5 @@ results = pipeline.run(executor)
 ## Limitations
 
 - **First-task latency**: The first task dispatched to a stage with a new `runtime_env` incurs virtualenv creation time. Subsequent tasks reuse the cached environment.
-- **Disk usage**: Each unique `runtime_env` creates a separate virtualenv on each worker node. Monitor disk space under `/tmp/ray/` for large clusters with many distinct environments.
+- **Disk usage**: Each unique `runtime_env` creates a separate virtualenv on each worker node. Monitor disk space under the Ray temp directory for large clusters with many distinct environments.
 - **Session scope**: Cached virtualenvs are tied to the Ray session. Restarting Ray clears the cache.
