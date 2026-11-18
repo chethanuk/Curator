@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 
 import pytest
+from loguru import logger
 
 from nemo_curator.stages.file_partitioning import FilePartitioningStage
 from nemo_curator.tasks import EmptyTask, FileGroupTask
@@ -202,6 +203,45 @@ class TestFilePartitioningStage:
         result = stage.process(empty_task)
 
         assert len(result) == 0
+
+    @pytest.mark.parametrize(
+        ("num_files", "files_per_partition", "limit", "expected_tasks", "expected_dropped"),
+        [
+            (5, 1, 3, 3, 2),
+            (5, 1, 1, 1, 4),
+            (5, 2, 2, 2, 1),
+            (5, 1, 5, 5, 0),
+            (5, 1, None, 5, 0),
+        ],
+    )
+    def test_limit_warns_with_dropped_group_count(  # noqa: PLR0913
+        self,
+        empty_task: EmptyTask,
+        tmp_path: Path,
+        num_files: int,
+        files_per_partition: int,
+        limit: int | None,
+        expected_tasks: int,
+        expected_dropped: int,
+    ):
+        """A WARNING reports how many file groups `limit` dropped; nothing is logged when nothing is dropped."""
+        test_files = _create_test_jsonl_files(tmp_path, num_files=num_files, subdir="path")
+        stage = FilePartitioningStage(file_paths=test_files, files_per_partition=files_per_partition, limit=limit)
+
+        records = []
+        sink_id = logger.add(lambda message: records.append(message.record), level="WARNING")
+        try:
+            result = stage.process(empty_task)
+        finally:
+            logger.remove(sink_id)
+
+        assert len(result) == expected_tasks
+        limit_messages = [r["message"] for r in records if "Reached limit" in r["message"]]
+        if expected_dropped:
+            assert len(limit_messages) == 1
+            assert f"dropping {expected_dropped} of" in limit_messages[0]
+        else:
+            assert limit_messages == []
 
     def test_process_with_blocksize(self, empty_task: EmptyTask, tmp_path: Path):
         """Test processing with blocksize setting."""
