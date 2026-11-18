@@ -27,7 +27,7 @@ import pyarrow as pa
 from loguru import logger
 
 from nemo_curator.stages.base import ProcessingStage
-from nemo_curator.stages.interleaved.pdf.nemotron_parse.utils import (
+from nemo_curator.stages.interleaved.pdf.utils import (
     extract_pdf_from_jsonl,
     extract_pdf_from_zip,
     extract_pdfs_from_jsonl_batch,

@@ -25,10 +25,8 @@ import pyarrow as pa
 from PIL import Image
 
 from nemo_curator.stages.base import ProcessingStage
-from nemo_curator.stages.interleaved.pdf.nemotron_parse.utils import (
-    DEFAULT_MIN_CROP_PX,
-    build_interleaved_rows,
-)
+from nemo_curator.stages.interleaved.pdf.nemotron_parse.utils import build_interleaved_rows
+from nemo_curator.stages.interleaved.pdf.utils import DEFAULT_MIN_CROP_PX
 from nemo_curator.stages.resources import Resources
 from nemo_curator.tasks import InterleavedBatch
 from nemo_curator.tasks.interleaved import INTERLEAVED_SCHEMA
