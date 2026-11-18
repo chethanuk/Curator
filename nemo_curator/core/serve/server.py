@@ -18,6 +18,7 @@ import json
 import logging
 import time
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from loguru import logger
@@ -126,14 +127,21 @@ class InferenceServer:
         """OpenAI-compatible base URL for the served models."""
         return f"http://{self._host}:{self.port}/v1"
 
-    def _wait_for_healthy(self) -> None:
-        """Poll ``/v1/models`` until all expected models appear in the response."""
+    def _wait_for_healthy(self, *, status_check: Callable[[], None] | None = None) -> None:
+        """Poll ``/v1/models`` until all expected models appear in the response.
+
+        ``status_check`` lets a backend abort the wait by raising once it knows the
+        deployment can no longer become ready.
+        """
         expected = {model.resolved_model_name for model in self.models}
         models_url = f"{self.endpoint}/models"
         deadline = time.monotonic() + self.health_check_timeout_s
         attempt = 0
         while time.monotonic() < deadline:
             attempt += 1
+            if status_check is not None:
+                # Outside the try below, which treats every exception as transient.
+                status_check()
             try:
                 resp = urllib.request.urlopen(models_url, timeout=5)  # noqa: S310
                 if resp.status == http.HTTPStatus.OK:

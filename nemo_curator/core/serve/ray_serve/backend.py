@@ -13,6 +13,8 @@
 # limitations under the License.
 
 import os
+import threading
+from concurrent.futures import Future
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
@@ -25,6 +27,10 @@ if TYPE_CHECKING:
     from ray.serve.llm import LLMConfig
 
     from nemo_curator.core.serve.server import InferenceServer
+
+# serve.status() waits on the controller with no timeout of its own; cap each poll's
+# status check like the /v1/models request (urlopen timeout=5).
+_SERVE_STATUS_TIMEOUT_S = 5
 
 
 class RayServeBackend(InferenceBackend):
@@ -92,10 +98,56 @@ class RayServeBackend(InferenceBackend):
 
         try:
             serve.run(app, name=server.name, blocking=False, logging_config=logging_config)
-            server._wait_for_healthy()
+            server._wait_for_healthy(status_check=self._raise_if_app_failed)
         except Exception:
             self._cleanup_failed_deploy()
             raise
+
+    def _raise_if_app_failed(self) -> None:
+        """Raise with Ray Serve's own diagnosis once the application cannot come up."""
+        from ray import serve
+        from ray.serve.schema import ApplicationStatus, DeploymentStatus, DeploymentStatusTrigger
+
+        status: Future = Future()
+
+        def fetch_status() -> None:
+            try:
+                status.set_result(serve.status())
+            except Exception as e:  # noqa: BLE001
+                status.set_exception(e)
+
+        # ponytail: a hung controller leaves one parked daemon thread per poll (at most
+        # health_check_timeout_s / 6); reuse a single in-flight call if that ever matters.
+        threading.Thread(target=fetch_status, daemon=True).start()
+        try:
+            app_status = status.result(timeout=_SERVE_STATUS_TIMEOUT_S).applications.get(self._server.name)
+        except Exception:  # noqa: BLE001
+            # A controller hiccup or stall mid-load is not a deploy failure; keep polling.
+            logger.debug("serve.status() failed while waiting for the application", exc_info=True)
+            return
+        if app_status is None:
+            return
+        # DEPLOY_FAILED/UNHEALTHY alone is not final: after a failed health check Serve
+        # replaces the replica and the deployment can go back to HEALTHY. The triggers
+        # below mean replicas (or the deployment actor) failed to start through Serve's
+        # whole retry budget in a row (e.g. GPU OOM). If no replica ever started, Serve
+        # stops retrying; otherwise it keeps trying, but we treat that as failed rather
+        # than wait out health_check_timeout_s.
+        fatal_triggers = {
+            DeploymentStatusTrigger.REPLICA_STARTUP_FAILED,
+            DeploymentStatusTrigger.DEPLOYMENT_ACTOR_FAILED,
+        }
+        failed = [
+            f"{name}: {deployment.message}"
+            for name, deployment in app_status.deployments.items()
+            if deployment.status in {DeploymentStatus.DEPLOY_FAILED, DeploymentStatus.UNHEALTHY}
+            and deployment.status_trigger in fatal_triggers
+        ]
+        # With no deployments listed, DEPLOY_FAILED means the app itself failed to build.
+        if failed or (not app_status.deployments and app_status.status == ApplicationStatus.DEPLOY_FAILED):
+            details = "; ".join(failed) or app_status.message
+            msg = f"Ray Serve application {self._server.name!r} is {app_status.status.value}: {details}"
+            raise RuntimeError(msg)
 
     @staticmethod
     def _quiet_runtime_env() -> dict[str, Any]:
